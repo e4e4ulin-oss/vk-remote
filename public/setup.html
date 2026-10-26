@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VK Remote</title>
+<style>
+  :root { --bg: #14161a; --card: #1e2127; --line: #2c3038; --text: #eef0f3; --muted: #8b919c; --accent: #0077ff; --ok: #2fbf71; --warn: #e5a13a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; padding: 24px 16px; }
+  .wrap { max-width: 860px; margin: 0 auto; display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+  @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } }
+  h1 { font-size: 24px; margin: 0 0 4px; grid-column: 1 / -1; }
+  .sub { color: var(--muted); margin: 0 0 8px; grid-column: 1 / -1; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; }
+  ol { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+  ol > li { counter-increment: s; position: relative; padding: 0 0 18px 40px; }
+  ol > li:last-child { padding-bottom: 0; }
+  ol > li::before { content: counter(s); position: absolute; left: 0; top: -2px; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--line); display: grid; place-items: center; font-weight: 600; font-size: 14px; }
+  ol > li.done::before { content: "✓"; background: var(--ok); }
+  b { font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; border-radius: 9px; padding: 8px 14px; margin: 8px 8px 0 0; font-weight: 500; }
+  .btn.alt { background: var(--line); }
+  code { background: var(--line); padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+  .status { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
+  .dot.ok { background: var(--ok); }
+  #qr { background: #fff; padding: 12px; border-radius: 10px; width: 100%; aspect-ratio: 1; display: grid; place-items: center; }
+  #qr svg { width: 100%; height: auto; display: block; }
+  .url { word-break: break-all; font-size: 13px; margin-top: 10px; }
+  .url a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>VK Remote</h1>
+  <p class="sub">Эту страницу можно закрыть, когда всё зелёное. Сервер работает, пока открыто чёрное окно.</p>
+
+  <div class="card">
+    <ol>
+      <li id="s1">
+        <b>Поставь расширение Tampermonkey</b> в браузер, где ты слушаешь VK:<br>
+        <a class="btn" target="_blank" href="https://chromewebstore.google.com/detail/dhdgffkkebhmkfjojejmpbldmpobfkfo">Chrome / Яндекс / Opera</a>
+        <a class="btn" target="_blank" href="https://microsoftedge.microsoft.com/addons/detail/iikmkjmpaadaobahmlepeloendndfphd">Edge</a>
+        <a class="btn" target="_blank" href="https://addons.mozilla.org/firefox/addon/tampermonkey/">Firefox</a>
+      </li>
+      <li id="s2">
+        <b>Разреши ему запускать скрипты</b> (Chrome, Edge, Яндекс):<br>
+        открой <code>chrome://extensions</code> (в Edge — <code>edge://extensions</code>) →
+        включи <b>«Режим разработчика»</b> справа сверху → у Tampermonkey нажми «Сведения» и включи
+        <b>«Разрешить пользовательские скрипты»</b>, если такой переключатель есть.
+        <div class="muted">В Firefox этот шаг не нужен.</div>
+      </li>
+      <li id="s3">
+        <b>Установи скрипт пульта</b> — Tampermonkey откроет окно, нажми «Установить»:<br>
+        <a class="btn" href="/vk-remote.user.js">Установить скрипт</a>
+      </li>
+      <li id="s4">
+        <b>Открой VK</b> в этом же браузере и включи любой трек:<br>
+        <a class="btn" target="_blank" href="https://vk.com/audio">Открыть vk.com/audio</a>
+        <div class="status"><span class="dot" id="dot"></span><span id="agentText">Жду вкладку VK…</span></div>
+        <div class="muted" id="agentHint">Если долго жёлтое — обнови вкладку VK (F5) и проверь шаги 2–3.</div>
+      </li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <b>Пульт на телефоне</b>
+    <p class="muted" style="margin:4px 0 12px">Наведи камеру телефона (тот же Wi-Fi), открой ссылку и добавь её на главный экран.</p>
+    <div id="qr"></div>
+    <div class="url" id="urls"></div>
+    <a class="btn alt" id="pcLink" href="#">Открыть пульт на этом ПК</a>
+    <p class="muted">Телефон не открывает ссылку? Значит, при первом запуске Windows-брандмауэр заблокировал Node.js:
+      «Панель управления → Брандмауэр → Разрешить взаимодействие с приложением» → поставь галочку «Частная» у Node.js.</p>
+  </div>
+</div>
+
+<script src="/qrcode.js"></script>
+<script>
+let qrDone = false;
+async function refresh() {
+  let info;
+  try { info = await (await fetch('/setup-info')).json(); } catch { return; }
+  document.getElementById('pcLink').href = '/?k=' + info.token;
+  if (!qrDone) {
+    qrDone = true;
+    const urls = info.phoneUrls;
+    document.getElementById('urls').innerHTML = urls.length
+      ? urls.map((u, i) => (i ? '<span class="muted">или </span>' : '') + `<a href="${u}">${u}</a>`).join('<br>')
+      : 'ПК не подключён к сети — телефон не сможет его найти.';
+    if (urls[0] && window.qrcode) {
+      const qr = qrcode(0, 'M');
+      qr.addData(urls[0]);
+      qr.make();
+      document.getElementById('qr').innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+    }
+    else document.getElementById('qr').textContent = 'QR недоступен — набери ссылку ниже вручную';
+  }
+  const ok = info.agentOnline;
+  document.getElementById('dot').className = 'dot' + (ok ? ' ok' : '');
+  document.getElementById('agentText').textContent = ok ? 'Вкладка VK на связи — всё готово!' : 'Жду вкладку VK…';
+  document.getElementById('agentHint').hidden = ok;
+  for (const id of ['s1', 's2', 's3', 's4']) document.getElementById(id).classList.toggle('done', ok);
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

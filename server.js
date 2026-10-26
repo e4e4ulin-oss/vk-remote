@@ -213,6 +213,29 @@ async function handle(req, res) {
     return handleAgent(req, res, url);
   }
 
+  if (url.pathname === '/ping') return endJson(res, 200, { app: 'vk-remote' });
+
+  if (url.pathname === '/qrcode.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+    return fs.createReadStream(path.join(__dirname, 'public', 'qrcode.js')).pipe(res);
+  }
+
+  if (url.pathname === '/vk-remote.user.js') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+    return fs.createReadStream(path.join(__dirname, 'vk-remote.user.js')).pipe(res);
+  }
+
+  // Страница настройки и её данные — только с самого ПК.
+  if (url.pathname === '/setup' || url.pathname === '/setup-info') {
+    if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
+    if (url.pathname === '/setup-info') {
+      const urls = lanAddresses().map((ip) => `http://${ip}:${PORT}/?k=${config.token}`);
+      return endJson(res, 200, { token: config.token, phoneUrls: urls, agentOnline: !!pickPrimary() });
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return fs.createReadStream(path.join(__dirname, 'public', 'setup.html')).pipe(res);
+  }
+
   if (url.pathname === '/' || url.pathname === '/index.html') {
     if (!tokenOk(req, url)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -237,12 +260,14 @@ function log(msg) {
   console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
 }
 
+// Домашний Wi-Fi обычно 192.168.x.x — ставим его первым (VPN и виртуалки в конец).
 function lanAddresses() {
   const out = [];
   for (const list of Object.values(os.networkInterfaces())) {
     for (const i of list || []) if (i.family === 'IPv4' && !i.internal) out.push(i.address);
   }
-  return out;
+  const rank = (ip) => (ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : 2);
+  return out.sort((a, b) => rank(a) - rank(b));
 }
 
 const server = http.createServer((req, res) => {
@@ -252,9 +277,19 @@ const server = http.createServer((req, res) => {
   });
 });
 
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') console.log(`Порт ${PORT} уже занят — VK Remote, похоже, уже запущен.`);
+  else console.log('Не удалось запустить сервер: ' + e.message);
+  process.exit(1);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nVK Remote запущен. Открой на телефоне (тот же Wi-Fi):\n');
   for (const ip of lanAddresses()) console.log(`   http://${ip}:${PORT}/?k=${config.token}`);
   console.log(`\nНа ПК: http://127.0.0.1:${PORT}/?k=${config.token}`);
   console.log('Ключ лежит в config.json — удали файл, чтобы сгенерировать новый.\n');
+  console.log('Не закрывай это окно, пока пользуешься пультом.\n');
+  if (process.env.VK_REMOTE_OPEN && process.platform === 'win32') {
+    execFile('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/setup`], { windowsHide: true });
+  }
 });

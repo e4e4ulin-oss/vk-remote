@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.1.0
+// @version      0.2.0
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -11,6 +11,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      127.0.0.1
+// @updateURL    http://127.0.0.1:8765/vk-remote.user.js
+// @downloadURL  http://127.0.0.1:8765/vk-remote.user.js
 // ==/UserScript==
 
 (function () {
