@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14161a">
+<title>VK Remote</title>
+<style>
+  :root {
+    --bg: #14161a; --card: #1e2127; --line: #2c3038; --text: #eef0f3; --muted: #8b919c;
+    --accent: #0077ff; --ok: #2fbf71; --warn: #e5a13a; --err: #e5534b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom)); }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 12px 0 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  .now { display: flex; gap: 14px; align-items: center; background: var(--card); border-radius: 16px; padding: 14px; }
+  .cover { width: 72px; height: 72px; border-radius: 10px; background: var(--line) center/cover no-repeat; flex: none; }
+  .meta { min-width: 0; }
+  .title { font-weight: 600; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .artist { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .progress { margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .controls { display: flex; justify-content: center; align-items: center; gap: 22px; padding: 18px 0 8px; }
+  .btn { border: 0; background: var(--card); color: var(--text); border-radius: 50%; width: 64px; height: 64px;
+    display: grid; place-items: center; cursor: pointer; }
+  .btn:active { transform: scale(.94); }
+  .btn.big { width: 84px; height: 84px; background: var(--accent); }
+  .btn svg { width: 28px; height: 28px; fill: currentColor; }
+  .btn.big svg { width: 36px; height: 36px; }
+  .vol { display: flex; align-items: center; gap: 10px; padding: 4px 4px 14px; color: var(--muted); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+  .tab { flex: 1; border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 10px; padding: 10px; font: inherit; cursor: pointer; }
+  .tab.on { background: var(--card); border-color: var(--accent); }
+  form { display: flex; gap: 8px; margin-bottom: 10px; }
+  input[type=search] { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 11px 12px; font: inherit; }
+  .go { border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 16px; font: inherit; cursor: pointer; }
+  .listhead { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 13px; margin: 6px 2px; }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list li { display: flex; align-items: center; gap: 10px; padding: 11px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .list li:active { background: var(--card); }
+  .list .n { width: 22px; color: var(--muted); font-size: 12px; text-align: right; flex: none; }
+  .list .t { min-width: 0; flex: 1; }
+  .list .t b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .t span { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  .list .d { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .more, .link { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 12px 0; }
+  .msg { color: var(--muted); padding: 14px 4px; }
+  .msg.err { color: var(--err); }
+  .toast { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto;
+    background: #3a1e1e; color: #ffd9d6; border-radius: 12px; padding: 12px 14px; display: none; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: var(--card); padding: 10px; border-radius: 10px; max-height: 50vh; overflow: auto; }
+  footer { display: flex; gap: 16px; justify-content: center; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">Подключение…</span></div>
+
+  <div class="now">
+    <div class="cover" id="cover"></div>
+    <div class="meta">
+      <div class="title" id="title">—</div>
+      <div class="artist" id="artist"></div>
+    </div>
+  </div>
+  <div class="progress" id="progressRow" hidden>
+    <span id="pos">0:00</span>
+    <input type="range" id="seek" min="0" max="100" step="1" value="0">
+    <span id="dur">0:00</span>
+  </div>
+
+  <div class="controls">
+    <button class="btn" data-cmd="prev" aria-label="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 18V6z"/></svg></button>
+    <button class="btn big" data-cmd="toggle" aria-label="Пауза/играть" id="playBtn"></button>
+    <button class="btn" data-cmd="next" aria-label="Следующий"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+  </div>
+
+  <div class="vol" id="volRow" hidden>
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+    <input type="range" id="vol" min="0" max="100" step="1">
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="my">Моя музыка</button>
+    <button class="tab" data-tab="search">Поиск</button>
+    <button class="tab" data-tab="page">С экрана ПК</button>
+  </div>
+
+  <form id="searchForm" hidden>
+    <input type="search" id="q" placeholder="Исполнитель или трек" enterkeyhint="search" autocomplete="off">
+    <button class="go">Найти</button>
+  </form>
+
+  <div class="listhead"><span id="listTitle"></span><button class="link" id="refresh">Обновить</button></div>
+  <ul class="list" id="list"></ul>
+  <div class="msg" id="listMsg">Нажми «Обновить», чтобы загрузить список.</div>
+  <div style="text-align:center"><button class="more" id="more" hidden>Загрузить ещё</button></div>
+
+  <footer><button class="link" id="diagBtn">Диагностика</button></footer>
+  <pre id="diag" hidden></pre>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('k') || '';
+const $ = (id) => document.getElementById(id);
+const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
+
+let tab = 'my';
+let listVersion = -1;
+let currentList = null;
+let dragging = false;
+let waitingList = false;
+let shownError = null;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 403) throw new Error('Неверный ключ в ссылке');
+  return r.json();
+}
+
+async function cmd(c) {
+  try {
+    const r = await api('/api/cmd', c);
+    if (!r.ok) toast(r.error || 'Не получилось');
+    setTimeout(poll, 500);
+    return r;
+  } catch (e) { toast(e.message); }
+}
+
+let toastTimer;
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text; t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.style.display = 'none'), 3500);
+}
+
+const fmt = (s) => {
+  if (s == null || !isFinite(s)) return '';
+  s = Math.floor(s);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+};
+
+function renderState(s) {
+  const dot = $('dot');
+  if (s.agentOnline) { dot.className = 'dot ok'; $('statusText').textContent = 'ПК на связи'; }
+  else if (s.mediaKeys) { dot.className = 'dot warn'; $('statusText').textContent = 'Вкладка VK не найдена — работают только кнопки ⏮ ⏯ ⏭'; }
+  else { dot.className = 'dot'; $('statusText').textContent = 'Вкладка VK не на связи'; }
+
+  const np = s.nowPlaying || {};
+  $('title').textContent = np.title || '—';
+  $('artist').textContent = np.artist || '';
+  $('cover').style.backgroundImage = np.cover ? `url("${np.cover.replace(/"/g, '%22')}")` : '';
+  $('playBtn').innerHTML = np.playing ? ICON_PAUSE : ICON_PLAY;
+
+  const hasPos = s.agentOnline && np.duration;
+  $('progressRow').hidden = !hasPos;
+  if (hasPos && !dragging) {
+    $('seek').max = Math.floor(np.duration);
+    $('seek').value = Math.floor(np.position || 0);
+    $('pos').textContent = fmt(np.position);
+    $('dur').textContent = fmt(np.duration);
+  }
+  $('volRow').hidden = !(s.agentOnline && np.volume != null);
+  if (np.volume != null && document.activeElement !== $('vol')) $('vol').value = Math.round(np.volume * 100);
+
+  if (s.lastError && s.lastError !== shownError) toast(s.lastError);
+  shownError = s.lastError;
+  if (s.listVersion !== listVersion) { listVersion = s.listVersion; loadList(); }
+}
+
+async function poll() {
+  try { renderState(await api('/api/state')); }
+  catch (e) { $('dot').className = 'dot'; $('statusText').textContent = 'Сервер на ПК недоступен'; }
+}
+
+async function loadList() {
+  const l = await api('/api/list');
+  if (!l.id) return;
+  currentList = l;
+  waitingList = false;
+  $('listTitle').textContent = l.title + (l.tracks.length ? ` · ${l.tracks.length}` : '');
+  const ul = $('list');
+  ul.innerHTML = '';
+  l.tracks.forEach((t, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="n"></span><span class="t"><b></b><span></span></span><span class="d"></span>';
+    li.querySelector('.n').textContent = i + 1;
+    li.querySelector('b').textContent = t.title;
+    li.querySelector('.t span').textContent = t.artist;
+    li.querySelector('.d').textContent = fmt(t.duration);
+    li.onclick = () => cmd({ type: 'playIndex', index: t.index, expect: { title: t.title, artist: t.artist } });
+    ul.appendChild(li);
+  });
+  $('listMsg').hidden = !!l.tracks.length && !l.error;
+  $('listMsg').className = l.error ? 'msg err' : 'msg';
+  $('listMsg').textContent = l.error || '';
+  $('more').hidden = !l.tracks.length;
+}
+
+function requestList() {
+  if (tab === 'search') {
+    const q = $('q').value.trim();
+    if (!q) return $('q').focus();
+    cmd({ type: 'search', q });
+  } else {
+    cmd({ type: tab === 'my' ? 'myMusic' : 'scrapePage' });
+  }
+  waitingList = true;
+  $('list').innerHTML = '';
+  $('listMsg').hidden = false;
+  $('listMsg').className = 'msg';
+  $('listMsg').textContent = 'Загружаю с ПК…';
+}
+
+document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => cmd({ type: b.dataset.cmd })));
+document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => {
+  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+  tab = b.dataset.tab;
+  $('searchForm').hidden = tab !== 'search';
+  if (tab === 'search') $('q').focus(); else requestList();
+}));
+$('searchForm').onsubmit = (e) => { e.preventDefault(); $('q').blur(); requestList(); };
+$('refresh').onclick = requestList;
+$('more').onclick = () => currentList && cmd({ type: 'loadMore', listId: currentList.id, listTitle: currentList.title });
+
+let volTimer;
+$('vol').oninput = () => { clearTimeout(volTimer); volTimer = setTimeout(() => cmd({ type: 'volume', value: $('vol').value / 100 }), 120); };
+$('seek').oninput = () => { dragging = true; $('pos').textContent = fmt(Number($('seek').value)); };
+$('seek').onchange = () => { dragging = false; cmd({ type: 'seek', value: Number($('seek').value) }); };
+
+$('diagBtn').onclick = async () => {
+  const before = (await api('/api/diag')).seq || 0;
+  const r = await cmd({ type: 'diagnose' });
+  if (!r || !r.ok) return;
+  $('diag').hidden = false;
+  $('diag').textContent = 'Жду ответ от вкладки VK…';
+  for (let i = 0; i < 20; i++) {
+    await new Promise((res) => setTimeout(res, 500));
+    const d = await api('/api/diag');
+    if ((d.seq || 0) > before) { $('diag').textContent = JSON.stringify(d, null, 2); return; }
+  }
+  $('diag').textContent = 'Вкладка VK не ответила.';
+};
+
+$('playBtn').innerHTML = ICON_PLAY;
+poll();
+setInterval(poll, 1500);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+</script>
+</body>
+</html>
