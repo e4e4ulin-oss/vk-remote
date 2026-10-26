@@ -3,15 +3,7 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 title VK Remote
-set "PORT=8765"
 set "NODE_VER=22.22.0"
-
-rem ---- Уже запущен? Тогда просто открываем страницу. ----
-call :ping
-if not errorlevel 1 (
-  start "" "http://127.0.0.1:%PORT%/setup"
-  exit /b 0
-)
 
 rem ---- Node.js: портативный в папке runtime, иначе системный (18+), иначе скачиваем. ----
 set "NODE=%~dp0runtime\node\node.exe"
@@ -48,6 +40,13 @@ echo  Готово.
 :have_node
 if not exist runtime mkdir runtime
 
+rem ---- Уже запущен? Тогда просто открываем страницу. ----
+"%NODE%" server.js --ping >nul 2>nul
+if not errorlevel 1 (
+  start "" "http://127.0.0.1:8765/setup"
+  exit /b 0
+)
+
 rem ---- Ярлык на рабочем столе (запускается свёрнутым, чтобы окно не мелькало). ----
 if not exist "runtime\shortcut-v2" (
   set "VKR_BAT=%~f0"
@@ -57,27 +56,22 @@ if not exist "runtime\shortcut-v2" (
 
 rem ---- Запуск сервера в фоне, без окна. Лог: runtime\server.log ----
 set "VK_REMOTE_OPEN=1"
-set "VK_REMOTE_LOG=%~dp0runtime\server.log"
-set "VKR_NODE=%NODE%"
-set "VKR_DIR=%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:VKR_NODE -ArgumentList 'server.js' -WorkingDirectory $env:VKR_DIR -WindowStyle Hidden"
+"%NODE%" server.js --background
+if not errorlevel 1 exit /b 0
 
-rem ---- Ждём до 10 секунд, пока сервер ответит. ----
-for /l %%i in (1,1,10) do (
-  timeout /t 1 /nobreak >nul
-  call :ping
-  if not errorlevel 1 exit /b 0
-)
 echo.
-echo  Сервер не запустился. Последние строки лога:
-echo.
+echo  ===== Фоновый запуск не удался. Лог runtime\server.log: =====
 if exist "runtime\server.log" type "runtime\server.log"
+echo  ==============================================================
+echo.
+echo  Node: "%NODE%"
+echo  Пробую запустить в этом окне, чтобы увидеть ошибку.
+echo  Если пульт так заработает — не закрывай окно. Пришли текст отсюда разработчику.
+echo.
+"%NODE%" server.js
+echo.
 pause
 exit /b 1
-
-:ping
-curl.exe -s -m 2 http://127.0.0.1:%PORT%/ping 2>nul | find "vk-remote" >nul
-exit /b %errorlevel%
 
 :fail_node
 echo.

@@ -11,17 +11,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 const PORT = Number(process.env.VK_REMOTE_PORT || 8765);
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const AGENT_TIMEOUT_MS = 35_000;
 
-// В фоне консоли нет — пишем лог в файл (перезаписывается при каждом запуске).
-if (process.env.VK_REMOTE_LOG) {
-  const out = fs.createWriteStream(process.env.VK_REMOTE_LOG, { flags: 'w' });
-  console.log = (...args) => out.write(args.join(' ') + '\n');
-}
+const LOG_PATH = path.join(__dirname, 'runtime', 'server.log');
 const POLL_HOLD_MS = 25_000;
 
 // ---------- конфиг с токеном ----------
@@ -286,26 +282,87 @@ function lanAddresses() {
   return out.sort((a, b) => rank(a) - rank(b));
 }
 
-const server = http.createServer((req, res) => {
-  handle(req, res).catch((e) => {
-    log('ошибка: ' + e.message);
-    endJson(res, 500, { error: e.message });
+function startServer() {
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch((e) => {
+      log('ошибка: ' + e.message);
+      endJson(res, 500, { error: e.message });
+    });
   });
-});
 
-server.on('error', (e) => {
-  if (e.code === 'EADDRINUSE') console.log(`Порт ${PORT} уже занят — VK Remote, похоже, уже запущен.`);
-  else console.log('Не удалось запустить сервер: ' + e.message);
-  process.exit(1);
-});
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') console.log(`Порт ${PORT} уже занят: либо VK Remote уже запущен, либо порт занят другой программой.`);
+    else console.log('Не удалось запустить сервер: ' + e.message);
+    process.exit(1);
+  });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nVK Remote запущен. Открой на телефоне (тот же Wi-Fi):\n');
-  for (const ip of lanAddresses()) console.log(`   http://${ip}:${PORT}/?k=${config.token}`);
-  console.log(`\nНа ПК: http://127.0.0.1:${PORT}/?k=${config.token}`);
-  console.log('Ключ лежит в config.json — удали файл, чтобы сгенерировать новый.\n');
-  if (!process.env.VK_REMOTE_LOG) console.log('Не закрывай это окно, пока пользуешься пультом.\n');
-  if (process.env.VK_REMOTE_OPEN && process.platform === 'win32') {
-    execFile('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/setup`], { windowsHide: true });
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('\nVK Remote запущен. Открой на телефоне (тот же Wi-Fi):\n');
+    for (const ip of lanAddresses()) console.log(`   http://${ip}:${PORT}/?k=${config.token}`);
+    console.log(`\nНа ПК: http://127.0.0.1:${PORT}/?k=${config.token}`);
+    console.log('Ключ лежит в config.json — удали файл, чтобы сгенерировать новый.\n');
+    if (!process.env.VK_REMOTE_BG) console.log('Не закрывай это окно, пока пользуешься пультом.\n');
+    if (process.env.VK_REMOTE_OPEN && process.platform === 'win32') {
+      execFile('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/setup`], { windowsHide: true });
+    }
+  });
+}
+
+// ---------- служебные режимы для bat-файлов ----------
+// Ходим на 127.0.0.1 напрямую через http, без curl и системных прокси.
+function ping() {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: PORT, path: '/ping', timeout: 1500 }, (res) => {
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => resolve(body.includes('vk-remote')));
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+  });
+}
+
+function stopServer() {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: PORT, path: '/shutdown', method: 'POST', headers: { 'X-VKR': '1' }, timeout: 3000 },
+      (res) => { res.resume(); resolve(res.statusCode === 200); }
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+// Запускаем копию себя отдельным процессом без окна; весь её вывод (и ошибки) — в runtime/server.log.
+async function startInBackground() {
+  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+  const fd = fs.openSync(LOG_PATH, 'w');
+  const child = spawn(process.execPath, [__filename], {
+    cwd: __dirname,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', fd, fd],
+    env: { ...process.env, VK_REMOTE_BG: '1' },
+  });
+  let exitCode = null;
+  child.on('exit', (code) => (exitCode = code));
+  child.on('error', (e) => { fs.appendFileSync(LOG_PATH, 'spawn: ' + e.message + '\n'); exitCode = -1; });
+  child.unref();
+
+  for (let i = 0; i < 20 && exitCode === null; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (await ping()) {
+      console.log('VK Remote запущен в фоне.');
+      return true;
+    }
   }
-});
+  console.log(exitCode === null ? 'Сервер не ответил за 10 секунд.' : `Сервер завершился с кодом ${exitCode}.`);
+  return false;
+}
+
+const mode = process.argv[2];
+if (mode === '--ping') ping().then((ok) => process.exit(ok ? 0 : 1));
+else if (mode === '--stop') stopServer().then((ok) => process.exit(ok ? 0 : 1));
+else if (mode === '--background') startInBackground().then((ok) => process.exit(ok ? 0 : 1));
+else startServer();
