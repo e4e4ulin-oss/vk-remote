@@ -272,14 +272,27 @@ function log(msg) {
   console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
 }
 
-// Домашний Wi-Fi обычно 192.168.x.x — ставим его первым (VPN и виртуалки в конец).
+// Настоящую домашнюю сеть ставим первой, VPN и виртуалки — в конец: по этому адресу
+// setup-страница рисует QR-код, и телефон должен попасть именно в Wi-Fi.
+// Виртуальные адаптеры (VirtualBox, Hyper-V, WSL, VMware, Docker) выдают себя MAC-адресом,
+// туннели — маской /30, а хост-онли сети — тем, что ПК в них сам шлюз (адрес .1).
+const VIRTUAL_MAC = /^(0a:00:27|00:15:5d|00:50:56|00:05:69|00:0c:29|02:42|00:00:00:00:00:00)/i;
+
+function rankAddress(i) {
+  let score = 0;
+  if (VIRTUAL_MAC.test(i.mac || '')) score += 4;
+  if (/^255\.255\.255\.(252|254|255)$/.test(i.netmask || '')) score += 4;
+  if (i.address.endsWith('.1')) score += 2;
+  if (!i.address.startsWith('192.168.')) score += i.address.startsWith('10.') ? 1 : 2;
+  return score;
+}
+
 function lanAddresses() {
   const out = [];
   for (const list of Object.values(os.networkInterfaces())) {
-    for (const i of list || []) if (i.family === 'IPv4' && !i.internal) out.push(i.address);
+    for (const i of list || []) if (i.family === 'IPv4' && !i.internal) out.push(i);
   }
-  const rank = (ip) => (ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : 2);
-  return out.sort((a, b) => rank(a) - rank(b));
+  return out.sort((a, b) => rankAddress(a) - rankAddress(b)).map((i) => i.address);
 }
 
 function startServer() {

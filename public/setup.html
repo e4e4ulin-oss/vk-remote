@@ -31,6 +31,8 @@
   #qr svg { width: 100%; height: auto; display: block; }
   .url { word-break: break-all; font-size: 13px; margin-top: 10px; }
   .url a { color: var(--accent); }
+  .url a.pick { color: var(--muted); text-decoration: none; }
+  .url a.pick.on { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -69,12 +71,13 @@
 
   <div class="card">
     <b>Пульт на телефоне</b>
-    <p class="muted" style="margin:4px 0 12px">Наведи камеру телефона (тот же Wi-Fi), открой ссылку и добавь её на главный экран.</p>
+    <p class="muted" style="margin:4px 0 12px">Наведи камеру телефона (тот же Wi-Fi), открой ссылку и добавь её на главный экран.
+      Если телефон не открывает — выбери в списке другой адрес, QR-код перестроится.</p>
     <div id="qr"></div>
     <div class="url" id="urls"></div>
     <a class="btn alt" id="pcLink" href="#">Открыть пульт на этом ПК</a>
     <p class="muted">Телефон не открывает ссылку? Значит, при первом запуске Windows-брандмауэр заблокировал Node.js:
-      «Панель управления → Брандмауэр → Разрешить взаимодействие с приложением» → поставь галочку «Частная» у Node.js.</p>
+      «Панель управления → Брандмауэр → Разрешить взаимодействие с приложением» → найди в списке «node.exe» (или «Node.js») и поставь галочку «Частная».</p>
   </div>
 </div>
 
@@ -88,16 +91,20 @@ async function refresh() {
   if (!qrDone) {
     qrDone = true;
     const urls = info.phoneUrls;
-    document.getElementById('urls').innerHTML = urls.length
-      ? urls.map((u, i) => (i ? '<span class="muted">или </span>' : '') + `<a href="${u}">${u}</a>`).join('<br>')
-      : 'ПК не подключён к сети — телефон не сможет его найти.';
-    if (urls[0] && window.qrcode) {
-      const qr = qrcode(0, 'M');
-      qr.addData(urls[0]);
-      qr.make();
-      document.getElementById('qr').innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+    const box = document.getElementById('urls');
+    if (!urls.length) box.textContent = 'ПК не подключён к сети — телефон не сможет его найти.';
+    else {
+      // Первый адрес — самый правдоподобный, но угадать наверняка нельзя: даём выбрать другой.
+      box.innerHTML = urls.map((u, i) => `<a class="pick${i ? '' : ' on'}" href="${u}" data-i="${i}">${u}</a>`).join('<br>');
+      box.onclick = (e) => {
+        const a = e.target.closest('a.pick');
+        if (!a) return;
+        e.preventDefault();
+        for (const el of box.querySelectorAll('a.pick')) el.classList.toggle('on', el === a);
+        showQr(urls[+a.dataset.i]);
+      };
+      showQr(urls[0]);
     }
-    else document.getElementById('qr').textContent = 'QR недоступен — набери ссылку ниже вручную';
   }
   const ok = info.agentOnline;
   document.getElementById('dot').className = 'dot' + (ok ? ' ok' : '');
@@ -105,6 +112,15 @@ async function refresh() {
   document.getElementById('agentHint').hidden = ok;
   for (const id of ['s1', 's2', 's3', 's4']) document.getElementById(id).classList.toggle('done', ok);
 }
+function showQr(url) {
+  const box = document.getElementById('qr');
+  if (!window.qrcode) { box.textContent = 'QR недоступен — набери ссылку ниже вручную'; return; }
+  const qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+}
+
 document.getElementById('stopLink').onclick = async (e) => {
   e.preventDefault();
   if (!confirm('Остановить сервер VK Remote? Пульт на телефоне перестанет работать.')) return;
