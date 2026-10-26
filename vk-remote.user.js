@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.3.0
+// @version      0.3.1
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -33,6 +33,7 @@
   ];
 
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const AGENT_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   // ----- перехват <audio>, которым играет VK -----
@@ -85,39 +86,79 @@
     return false;
   }
 
+  // У нового плеера VK (vk.ru, 2026) подписи кнопок меняются, а data-testid держатся.
+  // Значения взяты из diagnostics() на живой странице.
+  const BTN_TESTIDS = {
+    toggle: ['audio-player-controls-state-button', 'TopAudioPlayer_TogglePlayAction'],
+    next: ['audio-player-controls-forward-button', 'TopAudioPlayer_ForwardAction'],
+    prev: ['audio-player-controls-backward-button', 'TopAudioPlayer_BackwardAction'],
+  };
+
+  function clickTestId(names) {
+    for (const name of names) {
+      const el = document.querySelector('[data-testid="' + name + '"]');
+      if (el && el.offsetParent !== null) { el.click(); return true; }
+    }
+    return false;
+  }
+
   const NEXT_RE = /следующ|next/i;
   const PREV_RE = /предыдущ|previous|prev\b/i;
   const PLAY_RE = /воспроизв|продолж|пауз|play|pause/i;
+  // Медиаклавиша в Windows одна на play и pause: жмём её, только если за это время звук точно
+  // не сменил состояние. Меньшая пауза рискует снова поставить на паузу медленно грузящийся трек.
+  const MEDIAKEY_FALLBACK_MS = 1000;
 
   const player = {
     isPlaying() {
-      if (media) return !media.paused;
+      // Перехваченный <audio> врёт: новый плеер VK подменяет элемент на каждом треке,
+      // поэтому сначала спрашиваем сам VK и mediaSession, а элемент оставляем на крайний случай.
       const p = ap();
       if (p && typeof p.isPlaying === 'function') return !!p.isPlaying();
-      return W.navigator.mediaSession && W.navigator.mediaSession.playbackState === 'playing';
+      if (p && typeof p._isPlaying === 'boolean') return p._isPlaying;
+      const ms = W.navigator.mediaSession;
+      if (ms && (ms.playbackState === 'playing' || ms.playbackState === 'paused')) return ms.playbackState === 'playing';
+      if (media) return !media.paused;
+      return false;
     },
-    play() {
+    async play() {
+      if (this.isPlaying()) return true;
       const p = ap();
-      if (p && typeof p.play === 'function') return p.play();
-      if (media) return media.play();
-      return clickButton(PLAY_RE) || post('/agent/mediakey', { key: 'play' });
+      try {
+        if (p && typeof p.play === 'function') await p.play();
+        else if (media) await media.play();
+        else clickTestId(BTN_TESTIDS.toggle) || clickButton(PLAY_RE);
+      } catch (e) {
+        // NotAllowedError — браузер не разрешил звук; разбираемся ниже.
+      }
+      // Пока во вкладке VK не кликали мышью, браузер запрещает запускать звук программно.
+      // Нажатие медиаклавиши идёт мимо этого запрета, поэтому пробуем её, если звук не пошёл.
+      await sleep(MEDIAKEY_FALLBACK_MS);
+      if (!this.isPlaying()) await post('/agent/mediakey', { key: 'play' });
+      return true;
     },
-    pause() {
+    async pause() {
+      if (!this.isPlaying()) return true;
       const p = ap();
-      if (p && typeof p.pause === 'function') return p.pause();
-      if (media) return media.pause();
-      return clickButton(PLAY_RE) || post('/agent/mediakey', { key: 'pause' });
+      try {
+        if (p && typeof p.pause === 'function') p.pause();
+        else if (media) media.pause();
+        else clickTestId(BTN_TESTIDS.toggle) || clickButton(PLAY_RE);
+      } catch (e) {}
+      await sleep(MEDIAKEY_FALLBACK_MS);
+      if (this.isPlaying()) await post('/agent/mediakey', { key: 'pause' });
+      return true;
     },
     toggle() { return this.isPlaying() ? this.pause() : this.play(); },
     next() {
       const p = ap();
-      if (p) return p.playNext();
-      return clickButton(NEXT_RE) || post('/agent/mediakey', { key: 'next' });
+      if (p && typeof p.playNext === 'function') return p.playNext();
+      return clickTestId(BTN_TESTIDS.next) || clickButton(NEXT_RE) || post('/agent/mediakey', { key: 'next' });
     },
     prev() {
       const p = ap();
       if (p && typeof p.playPrev === 'function') return p.playPrev();
-      return clickButton(PREV_RE) || post('/agent/mediakey', { key: 'prev' });
+      return clickTestId(BTN_TESTIDS.prev) || clickButton(PREV_RE) || post('/agent/mediakey', { key: 'prev' });
     },
     setVolume(v) {
       v = Math.max(0, Math.min(1, Number(v)));
@@ -271,7 +312,7 @@
     return {
       url: location.href,
       hasAp: !!p,
-      apMethods: p ? Object.keys(Object.getPrototypeOf(p) || {}).concat(Object.keys(p)).slice(0, 60) : [],
+      apMethods: p ? Object.getOwnPropertyNames(Object.getPrototypeOf(p) || {}).concat(Object.keys(p)).filter((k) => k !== 'constructor').slice(0, 60) : [],
       hasNavGo: !!(W.nav && W.nav.go),
       capturedAudio: !!media,
       mediaSession: W.navigator.mediaSession && W.navigator.mediaSession.metadata
@@ -307,7 +348,6 @@
     }
   }
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function pollLoop() {
     for (;;) {
