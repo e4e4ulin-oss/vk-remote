@@ -13,7 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
 
-const PORT = Number(process.env.VK_REMOTE_PORT || 8765);
+const PORT = Number(process.env.VK_REMOTE_PORT || 27613);
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const AGENT_TIMEOUT_MS = 35_000;
 

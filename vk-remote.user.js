@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.2.0
+// @version      0.3.0
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -11,15 +11,15 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      127.0.0.1
-// @updateURL    http://127.0.0.1:8765/vk-remote.user.js
-// @downloadURL  http://127.0.0.1:8765/vk-remote.user.js
+// @updateURL    http://127.0.0.1:27613/vk-remote.user.js
+// @downloadURL  http://127.0.0.1:27613/vk-remote.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
 
   // ----- настройки -----
-  const SERVER = 'http://127.0.0.1:8765';
+  const SERVER = 'http://127.0.0.1:27613';
   const MY_MUSIC_PATH = '/audio';
   const SEARCH_PATH = (q) => '/audio?q=' + encodeURIComponent(q);
   // Селекторы строк с треками: старый дизайн VK, затем догадки для нового.

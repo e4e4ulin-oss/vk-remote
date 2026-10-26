@@ -43,7 +43,7 @@ if not exist runtime mkdir runtime
 rem ---- Уже запущен? Тогда просто открываем страницу. ----
 "%NODE%" server.js --ping >nul 2>nul
 if not errorlevel 1 (
-  start "" "http://127.0.0.1:8765/setup"
+  start "" "http://127.0.0.1:27613/setup"
   exit /b 0
 )
 
