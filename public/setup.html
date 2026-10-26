@@ -36,7 +36,8 @@
 <body>
 <div class="wrap">
   <h1>VK Remote</h1>
-  <p class="sub">Эту страницу можно закрыть, когда всё зелёное. Сервер работает, пока открыто чёрное окно.</p>
+  <p class="sub">Эту страницу можно закрыть, когда всё зелёное. Сервер работает в фоне до выключения ПК или пока не нажмёшь
+    <a href="#" id="stopLink" style="color:var(--muted)">«Остановить сервер»</a>. Снова открыть эту страницу — ярлык «VK Remote».</p>
 
   <div class="card">
     <ol>
@@ -104,8 +105,15 @@ async function refresh() {
   document.getElementById('agentHint').hidden = ok;
   for (const id of ['s1', 's2', 's3', 's4']) document.getElementById(id).classList.toggle('done', ok);
 }
+document.getElementById('stopLink').onclick = async (e) => {
+  e.preventDefault();
+  if (!confirm('Остановить сервер VK Remote? Пульт на телефоне перестанет работать.')) return;
+  try { await fetch('/shutdown', { method: 'POST', headers: { 'X-VKR': '1' } }); } catch {}
+  clearInterval(timer);
+  document.body.innerHTML = '<div style="padding:40px;text-align:center">Сервер остановлен. Запустить снова — ярлык «VK Remote» на рабочем столе.</div>';
+};
 refresh();
-setInterval(refresh, 2000);
+const timer = setInterval(refresh, 2000);
 </script>
 </body>
 </html>

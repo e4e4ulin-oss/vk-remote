@@ -16,6 +16,12 @@ const { execFile } = require('child_process');
 const PORT = Number(process.env.VK_REMOTE_PORT || 8765);
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const AGENT_TIMEOUT_MS = 35_000;
+
+// В фоне консоли нет — пишем лог в файл (перезаписывается при каждом запуске).
+if (process.env.VK_REMOTE_LOG) {
+  const out = fs.createWriteStream(process.env.VK_REMOTE_LOG, { flags: 'w' });
+  console.log = (...args) => out.write(args.join(' ') + '\n');
+}
 const POLL_HOLD_MS = 25_000;
 
 // ---------- конфиг с токеном ----------
@@ -225,6 +231,16 @@ async function handle(req, res) {
     return fs.createReadStream(path.join(__dirname, 'vk-remote.user.js')).pipe(res);
   }
 
+  // Остановка — только с ПК и только с заголовком X-VKR: обычный сайт в браузере
+  // не может послать такой запрос на localhost без CORS-разрешения, которого мы не даём.
+  if (url.pathname === '/shutdown') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    log('остановка по запросу');
+    endJson(res, 200, { ok: true });
+    setTimeout(() => process.exit(0), 200);
+    return;
+  }
+
   // Страница настройки и её данные — только с самого ПК.
   if (url.pathname === '/setup' || url.pathname === '/setup-info') {
     if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
@@ -288,7 +304,7 @@ server.listen(PORT, '0.0.0.0', () => {
   for (const ip of lanAddresses()) console.log(`   http://${ip}:${PORT}/?k=${config.token}`);
   console.log(`\nНа ПК: http://127.0.0.1:${PORT}/?k=${config.token}`);
   console.log('Ключ лежит в config.json — удали файл, чтобы сгенерировать новый.\n');
-  console.log('Не закрывай это окно, пока пользуешься пультом.\n');
+  if (!process.env.VK_REMOTE_LOG) console.log('Не закрывай это окно, пока пользуешься пультом.\n');
   if (process.env.VK_REMOTE_OPEN && process.platform === 'win32') {
     execFile('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/setup`], { windowsHide: true });
   }
