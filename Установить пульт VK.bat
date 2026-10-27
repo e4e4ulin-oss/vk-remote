@@ -33,11 +33,23 @@ rem ---- 2. Сама программа (последняя версия с GitH
 echo  [2/3] Скачиваю программу...
 curl.exe -fsSL -o "%VKR%\runtime\app.zip" "%REPO_ZIP%"
 if errorlevel 1 goto :fail
-if exist "%VKR%\app\server.js" "%NODE%" "%VKR%\app\server.js" --stop >nul 2>nul
 if exist "%VKR%\runtime\vk-remote-main" rmdir /s /q "%VKR%\runtime\vk-remote-main"
 tar -xf "%VKR%\runtime\app.zip" -C "%VKR%\runtime"
 if errorlevel 1 goto :fail
-if exist "%VKR%\app" rmdir /s /q "%VKR%\app"
+
+rem Старую версию сначала выключаем и ждём, пока она отпустит файлы (до 20 секунд),
+rem иначе папку app не удалить и новая версия ляжет внутрь старой.
+if exist "%VKR%\app\server.js" "%NODE%" "%VKR%\app\server.js" --stop >nul 2>nul
+set /a TRIES=0
+:rm_app
+if not exist "%VKR%\app" goto :app_removed
+rmdir /s /q "%VKR%\app" >nul 2>nul
+if not exist "%VKR%\app" goto :app_removed
+set /a TRIES+=1
+if %TRIES% GEQ 20 goto :fail_busy
+timeout /t 1 /nobreak >nul
+goto :rm_app
+:app_removed
 move "%VKR%\runtime\vk-remote-main" "%VKR%\app" >nul
 del "%VKR%\runtime\app.zip"
 if not exist "%VKR%\app\server.js" goto :fail
@@ -45,7 +57,14 @@ if not exist "%VKR%\app\server.js" goto :fail
 rem ---- 3. Брандмауэр, ярлык на рабочем столе, первый запуск ----
 echo  [3/3] Настраиваю...
 "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%"
-if errorlevel 1 goto :fail_start
+if errorlevel 1 goto :fail_busy
+echo.
+echo  Не получилось обновить: старая версия пульта ещё работает.
+echo  Выключи её (значок пульта у часов, правый клик, «Выключить пульт») и запусти этот файл ещё раз.
+pause
+exit /b 1
+
+:fail_start
 
 echo.
 echo  Готово! На рабочем столе появился ярлык «Управлять музыкой через ВК».

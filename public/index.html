@@ -166,7 +166,7 @@ function renderState(s) {
 
   const np = s.nowPlaying || {};
   $('title').textContent = np.title || '—';
-  $('artist').textContent = np.artist || '';
+  $('artist').textContent = np.ad ? 'Реклама VK — трек начнётся после неё' : np.artist || '';
   $('cover').style.backgroundImage = np.cover ? `url("${np.cover.replace(/"/g, '%22')}")` : '';
   $('playBtn').innerHTML = np.playing ? ICON_PAUSE : ICON_PLAY;
 

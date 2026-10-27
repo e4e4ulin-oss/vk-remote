@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.4.0
+// @version      0.4.1
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -75,17 +75,34 @@
   const reportError = (message) => post('/agent/error', { message });
 
   // ----- плеер -----
+  // Плеер VK опознаём по любому из знакомых методов: в нынешней версии playNext уже нет,
+  // зато есть isPlaying/getCurrentProgressTime, и именно они дают честные статус и время.
+  const PLAYER_METHODS = ['playNext', 'isPlaying', 'getCurrentProgressTime', 'getCurrentAudioLs'];
+
+  function looksLikePlayer(o) {
+    return !!o && PLAYER_METHODS.some((m) => typeof o[m] === 'function');
+  }
+
   function ap() {
-    if (W.ap && typeof W.ap.playNext === 'function') return W.ap;
-    try { if (typeof W.getAudioPlayer === 'function') return W.getAudioPlayer(); } catch {}
+    if (looksLikePlayer(W.ap)) return W.ap;
+    try {
+      const got = typeof W.getAudioPlayer === 'function' ? W.getAudioPlayer() : null;
+      if (looksLikePlayer(got)) return got;
+    } catch {}
     return null;
+  }
+
+  // У элемента с position:fixed свойство offsetParent всегда null, а панель плеера VK
+  // закреплена внизу экрана. Поэтому видимость проверяем по наличию прямоугольников.
+  function visible(el) {
+    return !!el && el.getClientRects().length > 0;
   }
 
   function clickButton(re) {
     const nodes = document.querySelectorAll('button, [role="button"], a, div[aria-label]');
     for (const n of nodes) {
       const label = (n.getAttribute('aria-label') || n.getAttribute('title') || '') + ' ' + (n.dataset.testid || '');
-      if (re.test(label) && n.offsetParent !== null) { n.click(); return true; }
+      if (re.test(label) && visible(n)) { n.click(); return true; }
     }
     return false;
   }
@@ -101,7 +118,7 @@
   function clickTestId(names) {
     for (const name of names) {
       const el = document.querySelector('[data-testid="' + name + '"]');
-      if (el && el.offsetParent !== null) { el.click(); return true; }
+      if (visible(el)) { el.click(); return true; }
     }
     return false;
   }
@@ -129,9 +146,12 @@
       if (this.isPlaying()) return true;
       const p = ap();
       try {
-        if (p && typeof p.play === 'function') await p.play();
-        else if (media) await media.play();
-        else clickTestId(BTN_TESTIDS.toggle) || clickButton(PLAY_RE);
+        // Своя кнопка плеера — единственный надёжный способ: методов play/pause у нового VK нет,
+        // а перехваченный <audio> устаревает, потому что VK подменяет элемент на каждом треке.
+        if (!clickTestId(BTN_TESTIDS.toggle) && !clickButton(PLAY_RE)) {
+          if (p && typeof p.play === 'function') await p.play();
+          else if (media) await media.play();
+        }
       } catch (e) {
         // NotAllowedError — браузер не разрешил звук; разбираемся ниже.
       }
@@ -145,9 +165,10 @@
       if (!this.isPlaying()) return true;
       const p = ap();
       try {
-        if (p && typeof p.pause === 'function') p.pause();
-        else if (media) media.pause();
-        else clickTestId(BTN_TESTIDS.toggle) || clickButton(PLAY_RE);
+        if (!clickTestId(BTN_TESTIDS.toggle) && !clickButton(PLAY_RE)) {
+          if (p && typeof p.pause === 'function') p.pause();
+          else if (media) media.pause();
+        }
       } catch (e) {}
       await sleep(MEDIAKEY_FALLBACK_MS);
       if (this.isPlaying()) await post('/agent/mediakey', { key: 'pause' });
@@ -183,18 +204,27 @@
     let artist = meta ? meta.artist : '';
     let cover = meta && meta.artwork && meta.artwork.length ? meta.artwork[meta.artwork.length - 1].src : '';
     const p = ap();
-    if (!title && p && typeof p.getCurrentAudio === 'function') {
-      const a = p.getCurrentAudio();
-      if (a) { title = decode(a[3]); artist = decode(a[4]); }
-    }
+    // Нынешний VK зовёт этот метод getCurrentAudioLs; getCurrentAudio оставлен для старого.
+    const cur = p && typeof p.getCurrentAudioLs === 'function' ? p.getCurrentAudioLs()
+      : p && typeof p.getCurrentAudio === 'function' ? p.getCurrentAudio() : null;
+    if (!title && Array.isArray(cur)) { title = decode(cur[3]); artist = decode(cur[4]); }
+    // Время и длительность спрашиваем у плеера: перехваченный <audio> у нового VK живёт
+    // недолго (элемент подменяется на каждом треке), и тогда прогресс на телефоне замирает.
+    const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+    const call = (m) => { try { return p && typeof p[m] === 'function' ? p[m]() : null; } catch { return null; } };
+    const posFromAp = num(call('getCurrentProgressTime'));
+    const durFromAp = num(call('getCurrentDuration'));
+    // Без подписки VK крутит рекламу перед треком: плеер говорит «играет», а время трека стоит на нуле.
+    const adTime = num(call('getCurrentAdProgressTime'));
     return {
       title: title || '',
       artist: artist || '',
       cover: cover || '',
       playing: !!player.isPlaying(),
-      position: media ? media.currentTime : null,
-      duration: media && isFinite(media.duration) ? media.duration : null,
-      volume: media ? media.volume : null,
+      ad: adTime !== null && adTime > 0,
+      position: posFromAp !== null ? posFromAp / 1000 : media ? media.currentTime : null,
+      duration: durFromAp !== null ? durFromAp : media && isFinite(media.duration) ? media.duration : null,
+      volume: media ? media.volume : num(p && p._userVolume),
       mode: p ? 'vk-api' : media ? 'audio-element' : 'dom',
     };
   }
@@ -210,7 +240,7 @@
 
   function findRowElements() {
     for (const sel of ROW_SELECTORS) {
-      const found = [...document.querySelectorAll(sel)].filter((el) => el.offsetParent !== null);
+      const found = [...document.querySelectorAll(sel)].filter(visible);
       if (found.length) return found;
     }
     return [];

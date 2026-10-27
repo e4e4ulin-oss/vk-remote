@@ -66,7 +66,7 @@ let nowPlaying = null;   // { title, artist, cover, playing, position, duration,
 let list = { version: 0, id: null, title: '', tracks: [], error: null };
 let diag = null;
 // Значок в трее (tray.ps1): когда последний раз опрашивал сервер и ждёт ли он команду «покажи QR».
-const tray = { lastSeen: 0, showQr: false, spawns: 0 };
+const tray = { lastSeen: 0, showQr: false, spawns: 0, child: null };
 let diagSeq = 0;
 let lastError = null;
 let cmdSeq = 0;
@@ -267,6 +267,7 @@ async function handle(req, res) {
   if (url.pathname === '/shutdown') {
     if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
     log('остановка по запросу');
+    if (tray.child) tray.child.kill();
     endJson(res, 200, { ok: true });
     setTimeout(() => process.exit(0), 200);
     return;
@@ -412,8 +413,10 @@ function startTray() {
       'powershell',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', path.join(__dirname, 'tray.ps1'),
         '-Port', String(PORT), '-Icon', path.join(__dirname, 'public', 'icon.ico')],
-      { windowsHide: true, stdio: 'ignore' }
+      // Рабочая папка — данные, а не программа: иначе Windows не даст установщику заменить папку app.
+      { windowsHide: true, stdio: 'ignore', cwd: DATA_DIR }
     );
+    tray.child = child;
     child.on('error', (e) => log('значок в трее: ' + e.message));
   };
   spawnTray();
@@ -460,7 +463,7 @@ async function startInBackground() {
   fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
   const fd = fs.openSync(LOG_PATH, 'w');
   const child = spawn(process.execPath, [__filename], {
-    cwd: __dirname,
+    cwd: DATA_DIR, // не папка программы: её должно быть можно удалить при обновлении
     detached: true,
     windowsHide: true,
     stdio: ['ignore', fd, fd],
