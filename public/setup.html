@@ -33,6 +33,10 @@
   .url a { color: var(--accent); }
   .url a.pick { color: var(--muted); text-decoration: none; }
   .url a.pick.on { color: var(--text); font-weight: 600; }
+  details.vpn { margin-top: 14px; background: var(--line); border-radius: 10px; padding: 10px 12px; }
+  details.vpn summary { cursor: pointer; font-size: 14px; }
+  details.vpn ul { padding-left: 18px; margin: 6px 0; }
+  details.vpn li { margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -52,7 +56,7 @@
         <div class="muted" id="noBrowser" hidden>Не нашёл Яндекс Браузер, Chrome или Edge. Установи Яндекс Браузер и нажми ярлык ещё раз.</div>
       </li>
       <li id="b2">
-        <b>Наведи камеру телефона на QR-код</b> справа и открой ссылку. Телефон должен быть в том же Wi-Fi, VPN на телефоне выключи.
+        <b>Наведи камеру телефона на QR-код</b> справа и открой ссылку. Телефон должен быть в том же Wi-Fi. Если на телефоне VPN — смотри подсказку под QR-кодом (настраивается один раз).
         <div class="muted">Чтобы пульт был под рукой — в браузере телефона «Добавить на главный экран».</div>
       </li>
     </ol>
@@ -95,8 +99,20 @@
     <div id="qr"></div>
     <div class="url" id="urls"></div>
     <a class="btn alt" id="pcLink" href="#">Открыть пульт на этом ПК</a>
-    <p class="muted">Телефон не открывает ссылку? Сначала выключи VPN на телефоне (или включи в нём доступ к локальной сети):
-      с VPN телефон не видит ПК в домашнем Wi-Fi. Если не помогло — возможно, при первом запуске Windows-брандмауэр заблокировал Node.js:
+    <details class="vpn" id="vpnHelp">
+      <summary><b>На телефоне VPN?</b> Настрой один раз — и выключать его больше не придётся</summary>
+      <p class="muted">VPN отправляет в интернет всё подряд, даже адрес компьютера в соседней комнате. Нужно один раз
+        сказать ему: домашнюю сеть — напрямую. Пункт называется по-разному, ищи в настройках VPN-приложения:</p>
+      <ul class="muted">
+        <li><b>Happ, v2RayTun, v2rayNG, Hiddify</b>: раздел «Маршрутизация» / «Routing». Включи «Обход LAN» / «Bypass LAN»,
+          а если такого нет — добавь в правила «Напрямую» (Direct) адреса
+          <code>192.168.0.0/16</code>, <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>.</li>
+        <li><b>WireGuard</b>: открой туннель → «Изменить» → галочка «Исключить частные IP» (Exclude private IPs).</li>
+        <li><b>Другие</b>: ищи «локальная сеть», «LAN», «раздельное туннелирование» / «split tunneling».</li>
+      </ul>
+      <p class="muted">Проверка: с включённым VPN наведи камеру на QR ещё раз — пульт должен открыться.</p>
+    </details>
+    <p class="muted">Всё равно не открывается — возможно, Windows-брандмауэр заблокировал Node.js:
       «Панель управления → Брандмауэр → Разрешить взаимодействие с приложением» → найди в списке «node.exe» (или «Node.js») и поставь галочку «Частная».</p>
   </div>
 </div>
