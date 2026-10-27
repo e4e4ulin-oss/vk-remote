@@ -193,6 +193,15 @@ async function handleAgent(req, res, url) {
   let agent = agents.get(id);
   if (!agent) {
     agent = { lastSeen: Date.now(), playing: false, queue: [], waiter: null };
+    // В режиме окна вкладка VK одна: новый агент значит, что страница перезагрузилась,
+    // и прежний уже мёртв — иначе команды ещё 35 с уходили бы ему.
+    if (browser) {
+      for (const [oid, a] of agents) {
+        if (a.waiter) endJson(a.waiter, 200, { commands: [] });
+        agents.delete(oid);
+      }
+      primaryId = id;
+    }
     agents.set(id, agent);
     log(`вкладка VK подключилась (${id.slice(0, 6)})`);
   }

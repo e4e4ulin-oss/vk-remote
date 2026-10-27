@@ -50,8 +50,16 @@ function Update-QrForm {
     if ($old) { $old.Dispose() }
   }
   $f.Controls['url'].Text = $info.url
+  # Основной адрес — почти всегда домашний Wi-Fi. Запасные (виртуальные сети, VPN) показываем
+  # только по просьбе и с предупреждением: раньше по ним легко было уйти на нерабочий адрес.
+  $isSpare = ($script:qrIndex % [Math]::Max(1, $info.count)) -ne 0
   $f.Controls['next'].Visible = ($info.count -gt 1)
-  if ($info.agentOnline) {
+  $f.Controls['next'].Text = if ($isSpare) { 'Следующий запасной адрес' } else { 'Телефон не открывает? Запасной адрес' }
+  $f.Controls['back'].Visible = $isSpare
+  if ($isSpare) {
+    $f.Controls['status'].Text = 'Это ЗАПАСНОЙ адрес — он нужен редко. Если и он не открывается, вернись к основному.'
+    $f.Controls['status'].ForeColor = [System.Drawing.Color]::FromArgb(190, 60, 40)
+  } elseif ($info.agentOnline) {
     $f.Controls['status'].Text = 'Окно ВК на связи. Наведи камеру телефона на код и открой ссылку.'
     $f.Controls['status'].ForeColor = [System.Drawing.Color]::FromArgb(30, 130, 70)
   } else {
@@ -61,6 +69,7 @@ function Update-QrForm {
 }
 
 function Show-QrForm {
+  $script:qrIndex = 0 # каждый раз начинаем с основного адреса
   if ($script:form -and -not $script:form.IsDisposed) {
     $script:shownUrl = $null
     Update-QrForm
@@ -77,7 +86,7 @@ function Show-QrForm {
   $f.MinimizeBox = $false
   $f.TopMost = $true
   $f.BackColor = [System.Drawing.Color]::White
-  $f.ClientSize = New-Object System.Drawing.Size(400, 560)
+  $f.ClientSize = New-Object System.Drawing.Size(400, 590)
   $f.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 
   $title = New-Object System.Windows.Forms.Label
@@ -114,9 +123,17 @@ function Show-QrForm {
   $next.Add_Click({ $script:qrIndex++; Update-QrForm })
   $f.Controls.Add($next)
 
+  $back = New-Object System.Windows.Forms.LinkLabel
+  $back.Name = 'back'
+  $back.Text = 'Вернуть основной адрес'
+  $back.SetBounds(20, 512, 360, 24)
+  $back.TextAlign = 'MiddleCenter'
+  $back.Add_LinkClicked({ $script:qrIndex = 0; Update-QrForm })
+  $f.Controls.Add($back)
+
   $help = New-Object System.Windows.Forms.LinkLabel
   $help.Text = 'Помощь: VPN на телефоне, брандмауэр'
-  $help.SetBounds(20, 516, 360, 24)
+  $help.SetBounds(20, 546, 360, 24)
   $help.TextAlign = 'MiddleCenter'
   $help.Add_LinkClicked({ Start-Process "$base/setup" })
   $f.Controls.Add($help)

@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 
 const CDP_PORT = Number(process.env.VK_REMOTE_CDP_PORT || 27614);
 const VK_URL = process.env.VK_REMOTE_VK_URL || 'https://vk.com/audio';
@@ -19,6 +20,10 @@ const LAUNCH_COOLDOWN_MS = 5_000; // пока браузер стартует, �
 
 function createBrowserControl({ dataDir, appDir, serverPort, log, browserPath, onDisconnect }) {
   const profileDir = path.join(dataDir, 'browser-profile');
+  // Номер этого запуска сервера. Регистрация скрипта в окне переживает перезапуск сервера, и после
+  // обновления в странице оказались бы и старый, и новый агент. Сервер отвечает только агенту своего
+  // запуска — старые замолкают без перезагрузки страницы (музыка не прерывается).
+  const RUN_ID = crypto.randomBytes(6).toString('hex');
   let lastLaunchAt = 0;
   let connected = false;
 
@@ -109,9 +114,9 @@ function createBrowserControl({ dataDir, appDir, serverPort, log, browserPath, o
   function agentSource() {
     const userscript = fs.readFileSync(path.join(appDir, 'vk-remote.user.js'), 'utf8');
     return `(function () {
-  if (window.top !== window || window.__vkrInjected || !${VK_HOST_RE}.test(location.hostname)) return;
+  if (window.top !== window || window.__vkrRun === '${RUN_ID}' || !${VK_HOST_RE}.test(location.hostname)) return;
   if (typeof window.__vkrSend !== 'function') return;
-  window.__vkrInjected = true;
+  window.__vkrRun = '${RUN_ID}';
   const pending = new Map();
   let seq = 0;
   window.__vkrReply = (id, ok, text) => {
@@ -125,7 +130,7 @@ function createBrowserControl({ dataDir, appDir, serverPort, log, browserPath, o
   const GM_xmlhttpRequest = (o) => {
     const id = ++seq;
     pending.set(id, o);
-    window.__vkrSend(JSON.stringify({ id, method: o.method, url: o.url, data: o.data || null }));
+    window.__vkrSend(JSON.stringify({ id, run: '${RUN_ID}', method: o.method, url: o.url, data: o.data || null }));
   };
 ${userscript}
 })();`;
@@ -135,6 +140,7 @@ ${userscript}
   async function relay(payload, send) {
     let req;
     try { req = JSON.parse(payload); } catch { return; }
+    if (req.run !== RUN_ID) return; // агент от прошлого запуска сервера — не отвечаем, он замолкает
     const prefix = `http://127.0.0.1:${serverPort}/agent/`;
     let ok = false;
     let text = '';
@@ -171,6 +177,13 @@ ${userscript}
           await send('Runtime.enable');
           await send('Page.enable');
           await send('Runtime.addBinding', { name: '__vkrSend' });
+          // Убираем регистрации прошлых запусков (их номера — небольшие числа по порядку),
+          // иначе при перезагрузке страницы запускался бы и старый агент.
+          await Promise.all(
+            Array.from({ length: 50 }, (_, i) =>
+              send('Page.removeScriptToEvaluateOnNewDocument', { identifier: String(i + 1) }).catch(() => {})
+            )
+          );
           await send('Page.addScriptToEvaluateOnNewDocument', { source });
           await send('Runtime.evaluate', { expression: source });
           connected = true;

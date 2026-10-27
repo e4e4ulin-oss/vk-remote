@@ -33,6 +33,9 @@
   .url a { color: var(--accent); }
   .url a.pick { color: var(--muted); text-decoration: none; }
   .url a.pick.on { color: var(--text); font-weight: 600; }
+  details.spare { margin-top: 8px; font-size: 13px; }
+  details.spare summary { cursor: pointer; color: var(--muted); }
+  details.spare summary, details.spare div { word-break: normal; }
   details.vpn { margin-top: 14px; background: var(--line); border-radius: 10px; padding: 10px 12px; }
   details.vpn summary { cursor: pointer; font-size: 14px; }
   details.vpn ul { padding-left: 18px; margin: 6px 0; }
@@ -95,7 +98,7 @@
   <div class="card">
     <b>Пульт на телефоне</b>
     <p class="muted" style="margin:4px 0 12px">Наведи камеру телефона (тот же Wi-Fi), открой ссылку и добавь её на главный экран.
-      Если телефон не открывает — выбери в списке другой адрес, QR-код перестроится.</p>
+      Если телефон не открывает — под кодом есть запасные адреса.</p>
     <div id="qr"></div>
     <div class="url" id="urls"></div>
     <a class="btn alt" id="pcLink" href="#">Открыть пульт на этом ПК</a>
@@ -133,8 +136,13 @@ async function refresh() {
     const box = document.getElementById('urls');
     if (!urls.length) box.textContent = 'ПК не подключён к сети — телефон не сможет его найти.';
     else {
-      // Первый адрес — самый правдоподобный, но угадать наверняка нельзя: даём выбрать другой.
-      box.innerHTML = urls.map((u, i) => `<a class="pick${i ? '' : ' on'}" href="${u}" data-i="${i}">${u}</a>`).join('<br>');
+      // Первый адрес — почти всегда домашний Wi-Fi. Остальные (виртуальные сети, VPN) прячем
+      // под «запасные»: по ним легко было уйти на нерабочий адрес.
+      const link = (u, i) => `<a class="pick${i ? '' : ' on'}" href="${u}" data-i="${i}">${u}</a>`;
+      box.innerHTML = link(urls[0], 0) + (urls.length > 1
+        ? `<details class="spare"><summary>Телефон не открывает? Запасные адреса</summary>${urls.slice(1).map((u, i) => link(u, i + 1)).join('<br>')}
+           <div class="muted">Запасной адрес нужен редко. Если не открылся — вернись к первому.</div></details>`
+        : '');
       box.onclick = (e) => {
         const a = e.target.closest('a.pick');
         if (!a) return;
