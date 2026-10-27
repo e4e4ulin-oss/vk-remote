@@ -4,6 +4,9 @@
 // Схема:
 //   телефон  --(Wi-Fi, токен)-->  этот сервер  <--(127.0.0.1, long-poll)--  юзерскрипт во вкладке vk.com
 // Если вкладка VK не на связи, play/pause/next/prev уходят системными медиаклавишами (Windows).
+//
+// Режим «без расширений» (VK_REMOTE_CDP=1, ярлык «Управлять музыкой через ВК»): вместо Tampermonkey
+// сервер сам открывает окно браузера и внедряет агент через протокол отладки — см. browser.js.
 
 'use strict';
 const http = require('http');
@@ -14,10 +17,15 @@ const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
 
 const PORT = Number(process.env.VK_REMOTE_PORT || 27613);
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+// Папка с данными (ключ, лог, профиль браузера). У установки через «Установить пульт VK.bat» она
+// отдельно от программы (--data), чтобы обновление не стирало ключ и вход в VK.
+const dataArg = process.argv.indexOf('--data');
+const DATA_DIR = path.resolve(dataArg > 0 ? process.argv[dataArg + 1] : process.env.VK_REMOTE_DATA || __dirname);
+const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const AGENT_TIMEOUT_MS = 35_000;
+const CDP_MODE = process.env.VK_REMOTE_CDP === '1';
 
-const LOG_PATH = path.join(__dirname, 'runtime', 'server.log');
+const LOG_PATH = path.join(DATA_DIR, 'runtime', 'server.log');
 const POLL_HOLD_MS = 25_000;
 
 // ---------- конфиг с токеном ----------
@@ -26,11 +34,29 @@ function loadConfig() {
     return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   } catch {
     const cfg = { token: crypto.randomBytes(8).toString('hex') };
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
     return cfg;
   }
 }
 const config = loadConfig();
+
+const browser = CDP_MODE
+  ? require('./browser').createBrowserControl({
+      dataDir: DATA_DIR,
+      appDir: __dirname,
+      serverPort: PORT,
+      log: (m) => log(m),
+      browserPath: config.browserPath,
+      // Окно закрыли — сразу показываем это на телефоне, не дожидаясь таймаута агента.
+      onDisconnect: () => {
+        for (const a of agents.values()) if (a.waiter) endJson(a.waiter, 200, { commands: [] });
+        agents.clear();
+        primaryId = null;
+        if (nowPlaying) nowPlaying = { ...nowPlaying, playing: false };
+      },
+    })
+  : null;
 
 // ---------- состояние ----------
 // agents: id -> { lastSeen, playing, queue: [], waiter: res|null }
@@ -130,6 +156,7 @@ function publicState() {
     nowPlaying,
     listVersion: list.version,
     diagAvailable: !!diag,
+    canLaunch: !!browser,
     lastError,
   };
 }
@@ -140,6 +167,10 @@ const TRANSPORT = new Set(['toggle', 'play', 'pause', 'next', 'prev']);
 async function handleCommand(cmd) {
   if (!cmd || typeof cmd.type !== 'string') return { ok: false, error: 'bad command' };
   lastError = null;
+  if (cmd.type === 'launch') {
+    if (!browser) return { ok: false, error: 'Открой vk.com на ПК вручную' };
+    return browser.ensureBrowser();
+  }
   const agent = pickPrimary();
   if (agent) {
     agent.queue.push({ ...cmd, id: ++cmdSeq });
@@ -150,6 +181,7 @@ async function handleCommand(cmd) {
     const ok = await pressMediaKey(cmd.type);
     return ok ? { ok: true, via: 'mediakey' } : { ok: false, error: 'Вкладка VK не на связи, а медиаклавиши недоступны' };
   }
+  if (browser) return { ok: false, error: 'Окно VK на ПК закрыто — нажми «Открыть VK на компьютере»' };
   return { ok: false, error: 'Вкладка VK не на связи: открой vk.com на ПК (юзерскрипт должен быть включён)' };
 }
 
@@ -237,12 +269,23 @@ async function handle(req, res) {
     return;
   }
 
+  if (url.pathname === '/local/launch') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    return endJson(res, 200, browser ? await browser.ensureBrowser() : { ok: false, error: 'not in browser mode' });
+  }
+
   // Страница настройки и её данные — только с самого ПК.
   if (url.pathname === '/setup' || url.pathname === '/setup-info') {
     if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
     if (url.pathname === '/setup-info') {
       const urls = lanAddresses().map((ip) => `http://${ip}:${PORT}/?k=${config.token}`);
-      return endJson(res, 200, { token: config.token, phoneUrls: urls, agentOnline: !!pickPrimary() });
+      return endJson(res, 200, {
+        token: config.token,
+        phoneUrls: urls,
+        agentOnline: !!pickPrimary(),
+        mode: browser ? 'browser' : 'userscript',
+        browserFound: browser ? !!browser.findBrowser() : null,
+      });
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     return fs.createReadStream(path.join(__dirname, 'public', 'setup.html')).pipe(res);
@@ -315,10 +358,13 @@ function startServer() {
     console.log(`\nНа ПК: http://127.0.0.1:${PORT}/?k=${config.token}`);
     console.log('Ключ лежит в config.json — удали файл, чтобы сгенерировать новый.\n');
     if (!process.env.VK_REMOTE_BG) console.log('Не закрывай это окно, пока пользуешься пультом.\n');
-    if (process.env.VK_REMOTE_OPEN && process.platform === 'win32') {
-      execFile('cmd', ['/c', 'start', '', `http://127.0.0.1:${PORT}/setup`], { windowsHide: true });
-    }
+    if (process.env.VK_REMOTE_OPEN) openUrl(`http://127.0.0.1:${PORT}/setup`);
+    if (browser) browser.watch();
   });
+}
+
+function openUrl(url) {
+  if (process.platform === 'win32') execFile('cmd', ['/c', 'start', '', url], { windowsHide: true });
 }
 
 // ---------- служебные режимы для bat-файлов ----------
@@ -356,7 +402,7 @@ async function startInBackground() {
     detached: true,
     windowsHide: true,
     stdio: ['ignore', fd, fd],
-    env: { ...process.env, VK_REMOTE_BG: '1' },
+    env: { ...process.env, VK_REMOTE_BG: '1', VK_REMOTE_DATA: DATA_DIR },
   });
   let exitCode = null;
   child.on('exit', (code) => (exitCode = code));
@@ -374,8 +420,45 @@ async function startInBackground() {
   return false;
 }
 
-const mode = process.argv[2];
-if (mode === '--ping') ping().then((ok) => process.exit(ok ? 0 : 1));
-else if (mode === '--stop') stopServer().then((ok) => process.exit(ok ? 0 : 1));
-else if (mode === '--background') startInBackground().then((ok) => process.exit(ok ? 0 : 1));
+function localPost(p) {
+  return fetch(`http://127.0.0.1:${PORT}${p}`, { method: 'POST', headers: { 'X-VKR': '1' } })
+    .then((r) => r.json())
+    .catch(() => null);
+}
+
+// Ярлык «Управлять музыкой через ВК»: поднять сервер в фоне, открыть окно VK и страницу с QR.
+async function openAll() {
+  process.env.VK_REMOTE_CDP = '1';
+  if (!(await ping()) && !(await startInBackground())) {
+    if (process.platform === 'win32') execFile('notepad', [LOG_PATH]);
+    return false;
+  }
+  await localPost('/local/launch');
+  openUrl(`http://127.0.0.1:${PORT}/setup`);
+  return true;
+}
+
+// Разовая настройка после скачивания: брандмауэр (одно окно «Да» от Windows), ярлык, первый запуск.
+async function installAll() {
+  const { installFirewall, installShortcut, SHORTCUT_NAME } = require('./install');
+  fs.mkdirSync(path.join(DATA_DIR, 'runtime'), { recursive: true });
+  const opts = { dataDir: DATA_DIR, appDir: __dirname, nodePath: process.execPath };
+  console.log('Разрешаю пульту доступ из домашней сети (Windows спросит «Разрешить изменения?» — нажми «Да»)...');
+  console.log((await installFirewall(opts)) ? '  готово' : '  пропущено — Windows спросит про брандмауэр позже, нажми «Разрешить»');
+  console.log(`Создаю ярлык «${SHORTCUT_NAME}» на рабочем столе...`);
+  console.log((await installShortcut(opts)) ? '  готово' : '  не получилось');
+  await stopServer(); // если работала старая версия — перезапустим уже новую
+  await new Promise((r) => setTimeout(r, 500));
+  return openAll();
+}
+
+const MODES = {
+  '--ping': ping,
+  '--stop': stopServer,
+  '--background': startInBackground,
+  '--open': openAll,
+  '--install': installAll,
+};
+const mode = process.argv.slice(2).find((a) => MODES[a]);
+if (mode) MODES[mode]().then((ok) => process.exit(ok ? 0 : 1));
 else startServer();

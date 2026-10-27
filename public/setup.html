@@ -39,9 +39,26 @@
 <div class="wrap">
   <h1>VK Remote</h1>
   <p class="sub">Эту страницу можно закрыть, когда всё зелёное. Сервер работает в фоне до выключения ПК или пока не нажмёшь
-    <a href="#" id="stopLink" style="color:var(--muted)">«Остановить сервер»</a>. Снова открыть эту страницу — ярлык «VK Remote».</p>
+    <a href="#" id="stopLink" style="color:var(--muted)">«Остановить сервер»</a>. Снова открыть эту страницу — ярлык <span id="shortcutName">«VK Remote»</span>.</p>
 
-  <div class="card">
+  <!-- Режим «без расширений»: пульт сам управляет отдельным окном браузера. -->
+  <div class="card" id="browserCard" hidden>
+    <ol>
+      <li id="b1">
+        <b>Войди в VK в открывшемся окне браузера</b> — это нужно только в первый раз.
+        Окно отдельное, музыка играет в нём. Его можно свернуть, но не закрывать.
+        <div class="status"><span class="dot" id="bdot"></span><span id="bText">Жду окно VK…</span></div>
+        <a class="btn alt" href="#" id="launchBtn">Открыть окно VK</a>
+        <div class="muted" id="noBrowser" hidden>Не нашёл Яндекс Браузер, Chrome или Edge. Установи Яндекс Браузер и нажми ярлык ещё раз.</div>
+      </li>
+      <li id="b2">
+        <b>Наведи камеру телефона на QR-код</b> справа и открой ссылку. Телефон должен быть в том же Wi-Fi, VPN на телефоне выключи.
+        <div class="muted">Чтобы пульт был под рукой — в браузере телефона «Добавить на главный экран».</div>
+      </li>
+    </ol>
+  </div>
+
+  <div class="card" id="tmCard">
     <ol>
       <li id="s1">
         <b>Поставь расширение Tampermonkey</b> в браузер, где ты слушаешь VK:<br>
@@ -110,6 +127,16 @@ async function refresh() {
     }
   }
   const ok = info.agentOnline;
+  if (info.mode === 'browser') {
+    document.getElementById('tmCard').hidden = true;
+    document.getElementById('browserCard').hidden = false;
+    document.getElementById('shortcutName').textContent = '«Управлять музыкой через ВК»';
+    document.getElementById('bdot').className = 'dot' + (ok ? ' ok' : '');
+    document.getElementById('bText').textContent = ok ? 'Окно VK на связи' : 'Жду окно VK…';
+    document.getElementById('launchBtn').hidden = ok;
+    document.getElementById('noBrowser').hidden = info.browserFound !== false;
+    document.getElementById('b1').classList.toggle('done', ok);
+  }
   document.getElementById('dot').className = 'dot' + (ok ? ' ok' : '');
   document.getElementById('agentText').textContent = ok ? 'Вкладка VK на связи — всё готово!' : 'Жду вкладку VK…';
   document.getElementById('agentHint').hidden = ok;
@@ -124,12 +151,17 @@ function showQr(url) {
   box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
 }
 
+document.getElementById('launchBtn').onclick = (e) => {
+  e.preventDefault();
+  fetch('/local/launch', { method: 'POST', headers: { 'X-VKR': '1' } }).catch(() => {});
+};
+
 document.getElementById('stopLink').onclick = async (e) => {
   e.preventDefault();
   if (!confirm('Остановить сервер VK Remote? Пульт на телефоне перестанет работать.')) return;
   try { await fetch('/shutdown', { method: 'POST', headers: { 'X-VKR': '1' } }); } catch {}
   clearInterval(timer);
-  document.body.innerHTML = '<div style="padding:40px;text-align:center">Сервер остановлен. Запустить снова — ярлык «VK Remote» на рабочем столе.</div>';
+  document.body.innerHTML = '<div style="padding:40px;text-align:center">Сервер остановлен. Запустить снова — ярлык на рабочем столе.</div>';
 };
 refresh();
 const timer = setInterval(refresh, 2000);

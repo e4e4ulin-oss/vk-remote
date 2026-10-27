@@ -61,6 +61,7 @@
 <body>
 <div class="wrap">
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">Подключение…</span></div>
+  <button class="tab" id="launchBtn" hidden style="width:100%;margin-bottom:10px">Открыть VK на компьютере</button>
 
   <div class="now">
     <div class="cover" id="cover"></div>
@@ -157,6 +158,8 @@ function renderState(s) {
   if (s.agentOnline) { dot.className = 'dot ok'; $('statusText').textContent = 'ПК на связи'; }
   else if (s.mediaKeys) { dot.className = 'dot warn'; $('statusText').textContent = 'Вкладка VK не найдена — работают только кнопки ⏮ ⏯ ⏭'; }
   else { dot.className = 'dot'; $('statusText').textContent = 'Вкладка VK не на связи'; }
+  if (s.canLaunch && !s.agentOnline) $('statusText').textContent = 'Окно VK на компьютере закрыто';
+  $('launchBtn').hidden = !(s.canLaunch && !s.agentOnline);
 
   const np = s.nowPlaying || {};
   $('title').textContent = np.title || '—';
@@ -233,6 +236,7 @@ document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => {
 }));
 $('searchForm').onsubmit = (e) => { e.preventDefault(); $('q').blur(); requestList(); };
 $('refresh').onclick = requestList;
+$('launchBtn').onclick = () => cmd({ type: 'launch' });
 $('more').onclick = () => currentList && cmd({ type: 'loadMore', listId: currentList.id, listTitle: currentList.title });
 
 let volTimer;
