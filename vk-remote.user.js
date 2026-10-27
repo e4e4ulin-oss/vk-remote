@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.3.1
+// @version      0.3.2
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -251,13 +251,16 @@
     return true;
   }
 
-  async function waitForRows(prevFirst) {
+  async function waitForRows(prevFirst, prevUrl) {
     const until = Date.now() + 10000;
     await sleep(800);
+    // Переход на тот же раздел не меняет ни адрес, ни строки — тогда ждать смены строк незачем,
+    // иначе пульт висел бы до таймаута.
+    const samePage = location.href === prevUrl;
     let lastCount = -1;
     while (Date.now() < until) {
       const els = findRowElements();
-      const changed = !prevFirst || els[0] !== prevFirst || !prevFirst.isConnected;
+      const changed = samePage || !prevFirst || els[0] !== prevFirst || !prevFirst.isConnected;
       if (els.length && changed && els.length === lastCount) return true;
       lastCount = els.length;
       await sleep(400);
@@ -267,8 +270,9 @@
 
   async function openAndList(url, id, title) {
     const prevFirst = findRowElements()[0];
+    const prevUrl = location.href;
     navigate(url);
-    await waitForRows(prevFirst);
+    await waitForRows(prevFirst, prevUrl);
     await sendList(id, title);
   }
 
@@ -292,8 +296,18 @@
       }
     }
     if (!el) return reportError('Трек не найден на странице — обнови список');
+    // Строка трека в новом VK — переключатель: клик по уже звучащему треку ставит его на паузу.
+    // Поэтому сначала смотрим, не он ли сейчас играет.
+    const want = parseRow(el);
+    const meta = W.navigator.mediaSession && W.navigator.mediaSession.metadata;
+    if (meta && want.title && meta.title === want.title && (!want.artist || !meta.artist || meta.artist === want.artist)) {
+      return player.isPlaying() ? undefined : player.play();
+    }
+    // Кнопку MusicTrackRow_PlaybackControls новый VK игнорирует, слушает только саму строку
+    // (data-testid="audiorow-tappable", подпись «Начать прослушивание»).
     const btn =
-      el.querySelector('.audio_row__play_btn, [data-testid*="play" i], button[aria-label*="Воспроизв" i], button[aria-label*="play" i]') ||
+      el.querySelector('[data-testid="audiorow-tappable"]') ||
+      el.querySelector('.audio_row__play_btn, button[aria-label*="Воспроизв" i], button[aria-label*="play" i]') ||
       el.querySelector('[class*="play" i]');
     (btn || el).click();
   }

@@ -11,6 +11,10 @@ const { spawn } = require('child_process');
 const CDP_PORT = Number(process.env.VK_REMOTE_CDP_PORT || 27614);
 const VK_URL = process.env.VK_REMOTE_VK_URL || 'https://vk.com/audio';
 const VK_HOST_RE = /(^|\.)vk\.(com|ru)$/;
+// Яндекс в новом профиле открывает рядом с VK свои стартовые вкладки — закрываем их,
+// но только сразу после нашего запуска и только служебные, чтобы не трогать вкладки человека.
+const STARTUP_JUNK_RE = /^(chrome|browser|yabrowser):\/\/|yandex\.(ru|com)\/portal\/ntp/i;
+const STARTUP_CLEANUP_MS = 60_000;
 const LAUNCH_COOLDOWN_MS = 5_000; // пока браузер стартует, повторный запуск открыл бы второе окно
 
 function createBrowserControl({ dataDir, appDir, serverPort, log, browserPath, onDisconnect }) {
@@ -85,7 +89,20 @@ function createBrowserControl({ dataDir, appDir, serverPort, log, browserPath, o
     } catch (e) {
       return { ok: false, error: 'Не удалось запустить браузер: ' + e.message };
     }
+    closeStartupTabs();
     return { ok: true };
+  }
+
+  async function closeStartupTabs() {
+    const until = Date.now() + STARTUP_CLEANUP_MS;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const list = await cdpJson('/json/list');
+      if (!list || !list.some(isVkPage)) continue; // пока нет вкладки VK, не закрываем — окно бы закрылось
+      for (const t of list) {
+        if (t.type === 'page' && !isVkPage(t) && STARTUP_JUNK_RE.test(t.url)) await cdpJson('/json/close/' + t.id);
+      }
+    }
   }
 
   // Код, который выполняется в каждой странице окна: подменяет API Tampermonkey и запускает юзерскрипт.
