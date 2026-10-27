@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.4.1
+// @version      0.4.2
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -24,7 +24,9 @@
   const SEARCH_PATH = (q) => '/audio?q=' + encodeURIComponent(q);
   // Раздел результатов поиска с треками самого пользователя («Моя музыка», «В моих аудиозаписях»…).
   const MY_SECTION_RE = /мо(я|ей|ю|и|их)\s+(музык|аудио|трек|плейлист)|в\s+моей|добавленн|my\s+music|your\s+music/i;
-  // Заголовки разделов на странице: в разных версиях VK это h2/h3, role=heading или блоки *Header*/*Title*.
+  // Заголовки разделов поиска у нынешнего VK («Мои треки», «Все треки», «Найдено в тексте»…).
+  const VK_HEADING_SEL = '[data-testid^="AudioCatalog_BlockHeader"]';
+  // Запасной вариант для другой вёрстки: h2/h3, role=heading или блоки *Header*/*Title*.
   const HEADING_SEL = 'h1,h2,h3,h4,[role="heading"],[data-testid*="header" i],[data-testid*="title" i],[class*="Header"],[class*="Title"]';
   // Селекторы строк с треками: старый дизайн VK, затем догадки для нового.
   const ROW_SELECTORS = [
@@ -264,10 +266,24 @@
   const isRow = (el) => ROW_SELECTORS.some((sel) => el.matches(sel));
   const hasRows = (el) => ROW_SELECTORS.some((sel) => el.querySelector(sel));
 
+  const firstLine = (el) => (el.innerText || '').trim().split('\n')[0].trim();
+
+  // Заголовок раздела внутри el. Сначала настоящие заголовки VK, потом общий поиск — но без длительностей
+  // треков (они у VK в h4) и без длинных текстов вроде баннера подписки.
   function headingText(el) {
-    const h = el.matches(HEADING_SEL) ? el : el.querySelector(HEADING_SEL);
-    const text = h && (h.innerText || '').trim().split('\n')[0].trim();
-    return text && text.length <= 60 ? text : null;
+    const vk = el.matches(VK_HEADING_SEL) ? el : el.querySelector(VK_HEADING_SEL);
+    if (vk) {
+      // В заголовке рядом с названием бывает ссылка «Показать все» — её в название раздела не берём.
+      const copy = vk.cloneNode(true);
+      copy.querySelectorAll('a, button, [role="button"], [data-testid*="Action"]').forEach((x) => x.remove());
+      return copy.textContent.trim().split('\n')[0].replace(/\s+/g, ' ').trim() || firstLine(vk) || null;
+    }
+    const candidates = el.matches(HEADING_SEL) ? [el] : el.querySelectorAll(HEADING_SEL);
+    for (const h of candidates) {
+      const text = firstLine(h);
+      if (text && text.length <= 40 && !/^\d{1,2}:\d{2}/.test(text) && !/₽|\$|€/.test(text)) return text;
+    }
+    return null;
   }
 
   // Раздел трека — ближайший заголовок выше по странице. Поднимаемся от строки и на каждом уровне
@@ -297,11 +313,16 @@
 
   async function sendList(id, title) {
     const tracks = scrape();
+    // В тексте ошибки — адрес, который увидел агент: если запрос побился по дороге (кодировка),
+    // это сразу заметно.
+    let addr = location.pathname + location.search;
+    try { addr = decodeURIComponent(addr); } catch {}
+    const where = id === 'search' ? ` (адрес: ${addr})` : '';
     await post('/agent/list', {
       id,
       title,
       tracks,
-      error: tracks.length ? null : 'Не нашёл треков на странице. Пришли диагностику — подстрою селекторы.',
+      error: tracks.length ? null : 'Не нашёл треков на странице' + where + '. Пришли диагностику — подстрою селекторы.',
     });
   }
 
@@ -319,7 +340,15 @@
     await goAndWait(SEARCH_PATH(q));
     const all = scrape();
     const mine = all.filter((t) => MY_SECTION_RE.test(t.section));
-    if (mine.length) return post('/agent/list', { id: 'my', title, tracks: mine.map((t) => ({ ...t, section: '' })) });
+    if (mine.length) {
+      return post('/agent/list', {
+        id: 'my',
+        title,
+        tracks: mine.map((t) => ({ ...t, section: '' })),
+        // Раздел «Мои треки» в поиске VK обрезан до 20 и кнопки «Показать все» у него нет.
+        note: mine.length >= 20 ? 'VK показывает только первые 20 совпадений — уточни запрос, если нужного нет' : null,
+      });
+    }
     // Если VK так и не показал раздела «Моя музыка», ищем среди загруженных треков своей страницы.
     const sections = new Set(all.map((t) => t.section).filter(Boolean));
     await goAndWait(MY_MUSIC_PATH);
