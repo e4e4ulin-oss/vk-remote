@@ -33,6 +33,15 @@
   .url a { color: var(--accent); }
   .url a.pick { color: var(--muted); text-decoration: none; }
   .url a.pick.on { color: var(--text); font-weight: 600; }
+  .wide { grid-column: 1 / -1; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row input { flex: 1; min-width: 220px; background: var(--line); border: 1px solid var(--line); color: var(--text); border-radius: 9px; padding: 9px 12px; font: inherit; }
+  .row .btn { margin: 0; border: 0; cursor: pointer; font: inherit; }
+  ol.small { padding-left: 20px; margin: 0 0 10px; font-size: 14px; }
+  ol.small li { padding: 0 0 4px; }
+  ol.small li::before { display: none; }
+  .smallqr { background: #fff; padding: 10px; border-radius: 10px; width: 200px; }
+  .smallqr svg { width: 100%; height: auto; display: block; }
   details.spare { margin-top: 8px; font-size: 13px; }
   details.spare summary { cursor: pointer; color: var(--muted); }
   details.spare summary, details.spare div { word-break: normal; }
@@ -123,6 +132,41 @@
   </div>
 </div>
 
+  <div class="card wide" id="tgCard">
+    <b>Telegram-бот</b> <span class="muted" id="tgStatus"></span>
+    <p class="muted" style="margin:4px 0 10px">Бот показывает, что сейчас играет, и даёт кнопки ⏮ ⏯ ⏭ — работает откуда угодно,
+      не только из дома. Один бот — один компьютер.</p>
+    <div id="tgOff">
+      <ol class="small">
+        <li>В Telegram открой <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, отправь <code>/newbot</code>, придумай имя и адрес бота.</li>
+        <li>Он пришлёт ключ вида <code>123456789:AA…</code> — вставь его сюда.</li>
+      </ol>
+      <form id="tgForm" class="row"><input id="tgToken" placeholder="Ключ бота от @BotFather" autocomplete="off"><button class="btn">Подключить</button></form>
+    </div>
+    <div id="tgPair" hidden>
+      <p>Наведи камеру телефона на код — откроется бот, нажми <b>«Старт»</b>. После этого бот слушается только тебя.</p>
+      <div id="tgQr" class="smallqr"></div>
+      <a id="tgLink" target="_blank"></a>
+    </div>
+    <div id="tgBound" hidden>
+      <p>✓ Бот <a id="tgBotLink" target="_blank"></a> подключён. Сообщение «Сейчас играет» с кнопками — в чате с ним.</p>
+    </div>
+    <div id="tgActions" hidden>
+      <a href="#" id="tgUnbind" class="muted">Привязать к другому телефону</a> ·
+      <a href="#" id="tgRemove" class="muted">Отключить бота</a>
+    </div>
+    <p class="muted" id="tgError"></p>
+  </div>
+
+  <div class="card wide">
+    <b>Установщик для друга со своим ботом</b>
+    <p class="muted" style="margin:4px 0 10px">Создай для друга отдельного бота в @BotFather и вставь его ключ — скачается
+      «Установить пульт VK.bat» с этим ботом внутри. Отправь файл другу: после установки ему останется отсканировать QR бота.
+      Ключ никуда не сохраняется. <b>Этого бота не подключай у себя</b> — один бот работает только на одном компьютере.</p>
+    <form id="friendForm" class="row"><input id="friendToken" placeholder="Ключ бота для друга" autocomplete="off"><button class="btn">Скачать установщик</button></form>
+    <p class="muted" id="friendError"></p>
+  </div>
+
 <script src="/qrcode.js"></script>
 <script>
 let qrDone = false;
@@ -153,6 +197,7 @@ async function refresh() {
       showQr(urls[0]);
     }
   }
+  renderTelegram(info.telegram);
   const ok = info.agentOnline;
   if (info.mode === 'browser') {
     document.getElementById('tmCard').hidden = true;
@@ -169,6 +214,53 @@ async function refresh() {
   document.getElementById('agentHint').hidden = ok;
   for (const id of ['s1', 's2', 's3', 's4']) document.getElementById(id).classList.toggle('done', ok);
 }
+// ---------- Telegram-бот ----------
+let tgShownLink = null;
+function renderTelegram(t) {
+  const card = document.getElementById('tgCard');
+  if (!t) { card.hidden = true; return; }
+  const st = { off: '', connecting: '— подключаюсь…', ok: '', conflict: '— этот бот уже работает на другом компьютере',
+    'bad-token': '— Telegram не принял ключ', network: '— нет связи с Telegram' }[t.status] || '';
+  document.getElementById('tgStatus').textContent = st;
+  document.getElementById('tgOff').hidden = t.enabled;
+  document.getElementById('tgPair').hidden = !(t.enabled && !t.bound && t.link);
+  document.getElementById('tgBound').hidden = !(t.enabled && t.bound);
+  document.getElementById('tgActions').hidden = !t.enabled;
+  if (t.bot) {
+    const a = document.getElementById('tgBotLink');
+    a.href = 'https://t.me/' + t.bot; a.textContent = '@' + t.bot;
+  }
+  if (t.link && t.link !== tgShownLink && window.qrcode) {
+    tgShownLink = t.link;
+    const qr = qrcode(0, 'M'); qr.addData(t.link); qr.make();
+    document.getElementById('tgQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+    const a = document.getElementById('tgLink'); a.href = t.link; a.textContent = 'или открой ссылку';
+  }
+}
+const tgPost = async (path, body) => {
+  const r = await fetch(path, { method: 'POST', headers: { 'X-VKR': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  document.getElementById('tgError').textContent = r.ok ? '' : j.error || 'Не получилось';
+  if (r.ok) renderTelegram(j);
+};
+document.getElementById('tgForm').onsubmit = (e) => { e.preventDefault(); tgPost('/local/telegram', { token: document.getElementById('tgToken').value }); };
+document.getElementById('tgUnbind').onclick = (e) => { e.preventDefault(); tgPost('/local/telegram/unbind'); };
+document.getElementById('tgRemove').onclick = (e) => { e.preventDefault(); if (confirm('Отключить Telegram-бота на этом компьютере?')) tgPost('/local/telegram', { token: '' }); };
+
+// Установщик для друга: сервер подставляет ключ в строку set "TG_TOKEN=" и отдаёт файл.
+document.getElementById('friendForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const token = document.getElementById('friendToken').value.trim();
+  const err = document.getElementById('friendError');
+  if (!/^\d+:[\w-]{30,}$/.test(token)) { err.textContent = 'Это не похоже на ключ бота — он выглядит как 123456789:AA…'; return; }
+  const a = document.createElement('a');
+  a.href = '/local/friend-installer?token=' + encodeURIComponent(token);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  err.textContent = 'Готово — файл скачан. Отправь его другу.';
+};
+
 function showQr(url) {
   const box = document.getElementById('qr');
   if (!window.qrcode) { box.textContent = 'QR недоступен — набери ссылку ниже вручную'; return; }

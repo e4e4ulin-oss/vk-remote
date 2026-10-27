@@ -40,6 +40,11 @@ function loadConfig() {
   }
 }
 const config = loadConfig();
+const saveConfig = () => fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+const INSTALLER_NAME = 'Установить пульт VK.bat';
+// Telegram-бот создаётся только в самом сервере (startServer): второй процесс с тем же ключом
+// (например, установщик) получил бы от Telegram конфликт.
+let telegram = null;
 
 const browser = CDP_MODE
   ? require('./browser').createBrowserControl({
@@ -226,6 +231,7 @@ async function handleAgent(req, res, url) {
       agent.playing = !!(body && body.playing);
       if (agent.playing) primaryId = id;
       if (primaryId === id || !nowPlaying) nowPlaying = body;
+      if (telegram) telegram.onState();
       return endJson(res, 200, { ok: true, primary: primaryId === id });
     case '/agent/list':
       list = {
@@ -308,6 +314,34 @@ async function handle(req, res) {
     return endJson(res, 200, { shown });
   }
 
+  if (url.pathname === '/local/telegram' || url.pathname === '/local/telegram/unbind') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    if (!telegram) return endJson(res, 503, { error: 'бот ещё не запущен' });
+    if (url.pathname === '/local/telegram/unbind') telegram.unbind();
+    else {
+      const token = String((await readBody(req)).token || '').trim();
+      if (token && !/^\d+:[\w-]{30,}$/.test(token)) return endJson(res, 400, { error: 'Это не похоже на ключ бота' });
+      telegram.setToken(token || null);
+    }
+    return endJson(res, 200, telegram.info());
+  }
+
+  // Установщик для друга со своим ботом: ключ подставляется в строку set "TG_TOKEN=" — только с ПК.
+  // Файл отдаёт сервер, а не страница: имя с кириллицей из атрибута download Chromium заменяет на «download».
+  if (url.pathname === '/local/friend-installer') {
+    if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
+    const token = String(url.searchParams.get('token') || '').trim();
+    if (!/^\d+:[\w-]{30,}$/.test(token)) return endJson(res, 400, { error: 'Это не похоже на ключ бота' });
+    const text = fs.readFileSync(path.join(__dirname, INSTALLER_NAME), 'utf8');
+    if (!text.includes('set "TG_TOKEN="\r\n')) return endJson(res, 500, { error: 'Шаблон установщика не найден — обнови пульт' });
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Cache-Control': 'no-store',
+      'Content-Disposition': `attachment; filename="VK-Remote-install.bat"; filename*=UTF-8''${encodeURIComponent(INSTALLER_NAME)}`,
+    });
+    return res.end(text.replace('set "TG_TOKEN="\r\n', `set "TG_TOKEN=${token}"\r\n`));
+  }
+
   if (url.pathname === '/local/launch') {
     if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
     return endJson(res, 200, browser ? await browser.ensureBrowser() : { ok: false, error: 'not in browser mode' });
@@ -324,6 +358,7 @@ async function handle(req, res) {
         agentOnline: !!pickPrimary(),
         mode: browser ? 'browser' : 'userscript',
         browserFound: browser ? !!browser.findBrowser() : null,
+        telegram: telegram ? telegram.info() : null,
       });
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -400,6 +435,13 @@ function startServer() {
     if (process.env.VK_REMOTE_OPEN) openUrl(`http://127.0.0.1:${PORT}/setup`);
     if (browser) browser.watch();
     startTray();
+    telegram = require('./telegram').createTelegram({
+      config,
+      saveConfig,
+      getNowPlaying: () => nowPlaying,
+      runCommand: handleCommand,
+      log,
+    });
   });
 }
 
@@ -525,6 +567,14 @@ async function installAll() {
   const { installFirewall, installShortcut, SHORTCUT_NAME } = require('./install');
   fs.mkdirSync(path.join(DATA_DIR, 'runtime'), { recursive: true });
   const opts = { dataDir: DATA_DIR, appDir: __dirname, nodePath: process.execPath };
+  // Ключ Telegram-бота из установщика «для друга» (строка TG_TOKEN в начале bat-файла).
+  const tgArg = process.argv.indexOf('--tg-token');
+  const tgToken = tgArg > 0 ? String(process.argv[tgArg + 1] || '').trim() : '';
+  if (tgToken && (!config.telegram || config.telegram.token !== tgToken)) {
+    config.telegram = { token: tgToken };
+    saveConfig();
+    console.log('Telegram-бот из установщика сохранён.');
+  }
   console.log('Разрешаю пульту доступ из домашней сети (Windows спросит «Разрешить изменения?» — нажми «Да»)...');
   console.log((await installFirewall(opts)) ? '  готово' : '  пропущено — Windows спросит про брандмауэр позже, нажми «Разрешить»');
   console.log(`Создаю ярлык «${SHORTCUT_NAME}» на рабочем столе и автозапуск при входе в Windows...`);

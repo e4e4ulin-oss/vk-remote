@@ -5,6 +5,9 @@ title Установка пульта для музыки ВК
 set "VKR=%LOCALAPPDATA%\VKRemote"
 set "NODE_VER=22.22.0"
 set "REPO_ZIP=https://github.com/e4e4ulin-oss/vk-remote/archive/refs/heads/main.zip"
+rem Ключ Telegram-бота. Пусто — без бота. Заполняется страницей настройки
+rem («Установщик для друга со своим ботом»); в публичной версии всегда пусто.
+set "TG_TOKEN="
 
 echo.
 echo  Устанавливаю пульт для музыки ВК. Это займёт минуту-две.
@@ -56,7 +59,11 @@ if not exist "%VKR%\app\server.js" goto :fail
 
 rem ---- 3. Брандмауэр, ярлык на рабочем столе, первый запуск ----
 echo  [3/3] Настраиваю...
-"%NODE%" "%VKR%\app\server.js" --install --data "%VKR%"
+if defined TG_TOKEN (
+  "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%" --tg-token "%TG_TOKEN%"
+) else (
+  "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%"
+)
 if errorlevel 1 goto :fail_busy
 echo.
 echo  Не получилось обновить: старая версия пульта ещё работает.
