@@ -49,6 +49,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
   const lastShown = new Map(); // chatId -> что сейчас показано в его сообщении
 
   const tg = () => config.telegram || (config.telegram = {});
+  const logChannels = () => tg().logChannels || (tg().logChannels = []);
   const watchers = () => tg().watchers || (tg().watchers = []);
   const call = (method, params) => botCall(tg().token, method, params, POLL_TIMEOUT_S + 10);
 
@@ -85,6 +86,13 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
     return { text, keyboard: { inline_keyboard: rows } };
   }
 
+  const mmss = (sec) => `${Math.floor(sec / 60)}:${String(Math.round(sec) % 60).padStart(2, '0')}`;
+  // «87%», «пропущен (12 с)» или «2:41», если длительность трека неизвестна.
+  function listenedText(e) {
+    if (e.skipped) return `<i>пропущен (${e.listened || 0} с)</i>`;
+    return e.percent !== null && e.percent !== undefined ? `${e.percent}%` : mmss(e.listened || 0);
+  }
+
   // Журнал: последние n треков со временем начала, по дням. Последний — с пометкой, если играет сейчас.
   function renderLog(n) {
     const items = history ? history.recent(n) : [];
@@ -100,7 +108,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
         lines.push('', `<b>${escape(lastDay)}</b>`);
       }
       const current = i === items.length - 1 && np.title === e.title;
-      const mark = current ? (np.playing ? ' ▶️' : ' ⏸') : e.skipped ? ' <i>(пропущен)</i>' : '';
+      const mark = current ? (np.playing ? ' ▶️' : ' ⏸') : ' · ' + listenedText(e);
       lines.push(`${time(e.t)}  ${escape(e.artist ? e.artist + ' — ' : '')}${escape(e.title)}${mark}`);
     });
     // Ограничение Telegram — 4096 символов: при переполнении отрезаем самые старые строки.
@@ -208,7 +216,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
         saveConfig();
         return say(chatId, 'Отписал. Вернуться — по той же ссылке.');
       }
-      const lg = text.match(/^\/log(?:@\w+)?(?:\s+(\d+))?/);
+      const lg = text.match(/^\/(?:musiclog|log)(?:@\w+)?(?:\s+(\d+))?/);
       if (lg) return sendLog(chatId, lg[1] ? Number(lg[1]) : 25);
       if (/^\/(now|start)\b/.test(text)) return showStatus({ fresh: true, only: chatId });
       return;
@@ -216,7 +224,78 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
     return say(chatId, tg().chatId ? 'Этот бот привязан к другому человеку.' : 'Пульт на компьютере пока не настроен.');
   }
 
+  // ---------- каналы-журналы ----------
+  // Каждый трек — строка в канале: сначала «▶️ 18:42 · Артист — Трек», после смены трека она исправляется
+  // на «18:42 · Артист — Трек · 87%». Канал хранит Telegram, поэтому журнал виден и при выключенном ПК.
+  function channelLine(e, final) {
+    const time = new Date(e.t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const name = `${escape(e.artist ? e.artist + ' — ' : '')}${escape(e.title)}`;
+    if (!final) return `▶️ ${time} · ${name}`;
+    const p = history.percent(e);
+    const listened = e.listened || 0;
+    const tail = listened < 30 ? `<i>пропущен (${listened} с)</i>` : p !== null ? `${p}%` : mmss(listened);
+    return `${time} · ${name} · ${tail}`;
+  }
+
+  async function postToChannels({ started, finished }) {
+    if (status !== 'ok' || !logChannels().length) return;
+    for (const ch of logChannels()) {
+      try {
+        if (finished && finished.msgs && finished.msgs[ch.id]) {
+          await call('editMessageText', { chat_id: ch.id, message_id: finished.msgs[ch.id], text: channelLine(finished, true), parse_mode: 'HTML' })
+            .catch((e) => { if (!/not modified/i.test(e.message)) throw e; });
+        }
+        if (started) {
+          const m = await call('sendMessage', { chat_id: ch.id, text: channelLine(started, false), parse_mode: 'HTML', disable_notification: true });
+          started.msgs = { ...(started.msgs || {}), [ch.id]: m.message_id };
+          history.save();
+        }
+      } catch (e) {
+        if (e.code === 403 || /chat not found|not enough rights/i.test(e.message)) {
+          log('журнал: канал недоступен, отключаю — ' + ch.title);
+          tg().logChannels = logChannels().filter((c) => c.id !== ch.id);
+          saveConfig();
+        } else log('журнал: не удалось записать в канал — ' + e.message);
+      }
+    }
+  }
+  if (history) history.subscribe((ev) => { postToChannels(ev); });
+
+  // Бота добавили в канал или группу (или убрали оттуда). Подключаем журнал, только если добавил
+  // хозяин или подписчик этого бота; из чужих каналов сразу выходим.
+  async function handleMembership(m) {
+    const chat = m.chat;
+    if (chat.type === 'private') return;
+    const st = m.new_chat_member && m.new_chat_member.status;
+    if (st === 'left' || st === 'kicked') {
+      if (logChannels().some((c) => c.id === chat.id)) {
+        tg().logChannels = logChannels().filter((c) => c.id !== chat.id);
+        saveConfig();
+        log('журнал: бота убрали из ' + (chat.title || chat.id));
+      }
+      return;
+    }
+    const by = m.from && m.from.id;
+    const trusted = by && (by === tg().chatId || watchers().some((w) => w.chatId === by));
+    if (!trusted) {
+      log('журнал: бота добавил в «' + (chat.title || chat.id) + '» посторонний — выхожу');
+      return call('leaveChat', { chat_id: chat.id }).catch(() => {});
+    }
+    const canPost = chat.type !== 'channel' || (m.new_chat_member.can_post_messages && st === 'administrator');
+    if (!canPost) {
+      return say(by, `Чтобы вести журнал в «${chat.title}», сделай бота администратором канала с правом публиковать сообщения.`).catch(() => {});
+    }
+    if (!logChannels().some((c) => c.id === chat.id)) {
+      logChannels().push({ id: chat.id, title: chat.title || String(chat.id) });
+      saveConfig();
+      log('журнал: подключён канал ' + chat.title);
+    }
+    await call('sendMessage', { chat_id: chat.id, text: '📜 Журнал прослушанного подключён. Каждый трек — строка: во сколько начал играть и сколько прослушано.', disable_notification: true }).catch(() => {});
+    return say(by, `Готово: журнал будет в «${chat.title}».`).catch(() => {});
+  }
+
   async function handleUpdate(u) {
+    if (u.my_chat_member) return handleMembership(u.my_chat_member);
     if (u.message && typeof u.message.text === 'string') return handleMessage(u.message);
     if (u.callback_query) {
       const q = u.callback_query;
@@ -254,7 +333,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
           log('бот подключён: @' + me.username);
           showStatus();
         }
-        const updates = await call('getUpdates', { offset, timeout: POLL_TIMEOUT_S, allowed_updates: ['message', 'callback_query'] });
+        const updates = await call('getUpdates', { offset, timeout: POLL_TIMEOUT_S, allowed_updates: ['message', 'callback_query', 'my_chat_member'] });
         status = 'ok';
         for (const u of updates) {
           offset = u.update_id + 1;
@@ -302,6 +381,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history
       bound: !!t.chatId,
       boundTo: t.chatId ? t.chatName || 'чат ' + t.chatId : null,
       watchers: watchers().map((w) => w.name || 'чат ' + w.chatId),
+      logChannels: logChannels().map((c) => c.title),
       link: me ? `https://t.me/${me.username}?start=${code('pairCode')}` : null,
     };
   }

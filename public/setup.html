@@ -165,6 +165,12 @@
       <p>👀 Видят, что у тебя играет (без управления): <b id="tgWatchList"></b> ·
         <a href="#" id="tgUnwatch" class="muted">убрать всех</a></p>
     </div>
+    <div id="tgLogInfo" hidden>
+      <p><b>Журнал в канале</b> — виден всегда, даже когда компьютер выключен. Создай в Telegram канал (можно закрытый),
+        добавь туда бота <span class="tgBotName"></span> администратором с правом «Публикация сообщений» — бот напишет
+        «Журнал подключён». Подключить может хозяин бота или подписчик.
+        <span id="tgLogList" class="muted"></span></p>
+    </div>
     <div id="tgActions" hidden>
       <a href="#" id="tgUnbind" class="muted">Привязать к другому телефону</a> ·
       <a href="#" id="tgRemove" class="muted">Отключить бота</a>
@@ -277,6 +283,10 @@ function renderTelegram(t) {
   document.getElementById('tgBound').hidden = !(t.enabled && t.bound);
   document.getElementById('tgActions').hidden = !t.enabled;
   document.getElementById('tgBoundTo').textContent = t.boundTo || '';
+  document.getElementById('tgLogInfo').hidden = !t.enabled;
+  document.querySelectorAll('.tgBotName').forEach((el) => (el.textContent = t.bot ? '@' + t.bot : ''));
+  const chans = t.logChannels || [];
+  document.getElementById('tgLogList').textContent = chans.length ? 'Сейчас журнал ведётся в: ' + chans.join(', ') + '.' : '';
   const watchers = t.watchers || [];
   document.getElementById('tgWatchers').hidden = !(t.enabled && watchers.length);
   document.getElementById('tgWatchList').textContent = watchers.join(', ');
