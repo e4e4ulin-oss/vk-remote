@@ -40,7 +40,7 @@ async function botCall(token, method, params = {}, timeoutS = 15) {
   return j.result;
 }
 
-function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) {
+function createTelegram({ config, saveConfig, getNowPlaying, runCommand, history, log }) {
   let me = null;           // { username } бота
   let status = 'off';      // off | connecting | ok | conflict | bad-token | network
   let stopped = false;
@@ -74,13 +74,46 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
         { text: '⏭', callback_data: 'next' },
       ]);
     }
+    const extra = [];
     if (np.title && !np.ad) {
       // Поиск трека в VK: на телефоне откроется приложение VK, там трек добавляется себе обычным «+».
       const q = [np.artist, np.title].filter(Boolean).join(' ');
-      rows.push([{ text: '🔍 Найти в VK', url: 'https://vk.com/audio?q=' + encodeURIComponent(q) }]);
+      extra.push({ text: '🔍 Найти в VK', url: 'https://vk.com/audio?q=' + encodeURIComponent(q) });
     }
+    if (history) extra.push({ text: '📜 Что играло', callback_data: 'log' });
+    if (extra.length) rows.push(extra);
     return { text, keyboard: { inline_keyboard: rows } };
   }
+
+  // Журнал: последние n треков со временем начала, по дням. Последний — с пометкой, если играет сейчас.
+  function renderLog(n) {
+    const items = history ? history.recent(n) : [];
+    if (!items.length) return '📜 Журнал пока пуст — здесь появятся треки, когда что-нибудь заиграет.';
+    const np = getNowPlaying() || {};
+    const day = (t) => new Date(t).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+    const time = (t) => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const lines = ['📜 <b>Что играло</b>'];
+    let lastDay = null;
+    items.forEach((e, i) => {
+      if (day(e.t) !== lastDay) {
+        lastDay = day(e.t);
+        lines.push('', `<b>${escape(lastDay)}</b>`);
+      }
+      const current = i === items.length - 1 && np.title === e.title;
+      const mark = current ? (np.playing ? ' ▶️' : ' ⏸') : e.skipped ? ' <i>(пропущен)</i>' : '';
+      lines.push(`${time(e.t)}  ${escape(e.artist ? e.artist + ' — ' : '')}${escape(e.title)}${mark}`);
+    });
+    // Ограничение Telegram — 4096 символов: при переполнении отрезаем самые старые строки.
+    let text = lines.join('\n');
+    while (text.length > 4000 && lines.length > 3) {
+      lines.splice(2, 1);
+      text = lines.join('\n');
+    }
+    return text;
+  }
+
+  const sendLog = (chatId, n = 25) =>
+    call('sendMessage', { chat_id: chatId, text: renderLog(Math.min(100, Math.max(1, n))), parse_mode: 'HTML', disable_notification: true });
 
   // Все, кому показываем сообщение: хозяин и подписчики. holder — объект, где хранится messageId.
   function targets() {
@@ -175,6 +208,8 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
         saveConfig();
         return say(chatId, 'Отписал. Вернуться — по той же ссылке.');
       }
+      const lg = text.match(/^\/log(?:@\w+)?(?:\s+(\d+))?/);
+      if (lg) return sendLog(chatId, lg[1] ? Number(lg[1]) : 25);
       if (/^\/(now|start)\b/.test(text)) return showStatus({ fresh: true, only: chatId });
       return;
     }
@@ -185,7 +220,13 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
     if (u.message && typeof u.message.text === 'string') return handleMessage(u.message);
     if (u.callback_query) {
       const q = u.callback_query;
-      const fromOwner = q.message && q.message.chat.id === tg().chatId;
+      const chatId = q.message && q.message.chat.id;
+      const fromOwner = chatId === tg().chatId;
+      // Журнал можно смотреть и хозяину, и подписчикам.
+      if (q.data === 'log' && (fromOwner || watchers().some((w) => w.chatId === chatId))) {
+        await call('answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
+        return sendLog(chatId);
+      }
       const type = fromOwner && ['prev', 'toggle', 'next'].includes(q.data) ? q.data : null;
       let answer = 'Управлять может только хозяин пульта';
       if (type) {

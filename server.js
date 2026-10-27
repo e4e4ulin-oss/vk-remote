@@ -45,6 +45,7 @@ const INSTALLER_NAME = 'Установить пульт VK.bat';
 // Telegram-бот создаётся только в самом сервере (startServer): второй процесс с тем же ключом
 // (например, установщик) получил бы от Telegram конфликт.
 let telegram = null;
+let history = null; // журнал прослушанного (history.js), тоже только в самом сервере
 
 const browser = CDP_MODE
   ? require('./browser').createBrowserControl({
@@ -297,7 +298,10 @@ async function handleAgent(req, res, url) {
     case '/agent/state':
       agent.playing = !!(body && body.playing);
       if (agent.playing) primaryId = id;
-      if (primaryId === id || !nowPlaying) nowPlaying = body;
+      if (primaryId === id || !nowPlaying) {
+        nowPlaying = body;
+        if (history) history.onState(nowPlaying);
+      }
       if (telegram) telegram.onState();
       return endJson(res, 200, { ok: true, primary: primaryId === id });
     case '/agent/list':
@@ -553,7 +557,9 @@ function startServer() {
     if (process.env.VK_REMOTE_OPEN) openUrl(`http://127.0.0.1:${PORT}/setup`);
     if (browser) browser.watch();
     startTray();
+    history = require('./history').createHistory({ dataDir: DATA_DIR, log });
     telegram = require('./telegram').createTelegram({
+      history,
       config,
       saveConfig,
       getNowPlaying: () => nowPlaying,
