@@ -154,8 +154,19 @@ const sameSecret = (x, y) => {
 };
 
 // Кто пришёл: хозяин (главный ключ из config.token) или гость (свой ключ, который хозяин может
-// отозвать в любой момент). null — ключа нет или его отозвали.
-const guests = () => config.guests || (config.guests = []);
+// отозвать в любой момент; сам он истекает через сутки). null — ключа нет, его отозвали или он истёк.
+const GUEST_TTL_MS = Number(process.env.VK_REMOTE_GUEST_TTL_MS) || 24 * 60 * 60 * 1000; // переопределение — только для тестов
+const expiresOf = (g) => g.expires || g.created + GUEST_TTL_MS; // у гостей из старых версий срока не было
+function guests() {
+  const list = config.guests || (config.guests = []);
+  const alive = list.filter((g) => expiresOf(g) > Date.now());
+  if (alive.length !== list.length) {
+    config.guests = alive;
+    saveConfig();
+    log(`истёк гостевой доступ: ${list.length - alive.length}`);
+  }
+  return config.guests;
+}
 function whoIs(req, url) {
   const t = String(req.headers['x-token'] || url.searchParams.get('k') || '');
   if (!t) return null;
@@ -168,7 +179,7 @@ function whoIs(req, url) {
 
 // Гостевая ссылка — по тому же адресу, по которому зашёл телефон хозяина: он точно рабочий в этой сети.
 const guestUrl = (req, g) => `http://${req.headers.host}/?k=${g.token}`;
-const guestView = (req, g) => ({ id: g.id, name: g.name, created: g.created, lastSeen: g.lastSeen || null, url: guestUrl(req, g) });
+const guestView = (req, g) => ({ id: g.id, name: g.name, created: g.created, expires: expiresOf(g), lastSeen: g.lastSeen || null, url: guestUrl(req, g) });
 
 async function handleGuests(req, res, url) {
   if (url.pathname === '/api/guests' && req.method === 'GET') {
@@ -178,11 +189,19 @@ async function handleGuests(req, res, url) {
   const body = await readBody(req);
   if (url.pathname === '/api/guests') {
     const name = String(body.name || '').trim().slice(0, 40) || `Гость ${guests().length + 1}`;
-    const g = { id: crypto.randomBytes(4).toString('hex'), token: 'g' + crypto.randomBytes(8).toString('hex'), name, created: Date.now() };
+    const now = Date.now();
+    const g = { id: crypto.randomBytes(4).toString('hex'), token: 'g' + crypto.randomBytes(8).toString('hex'), name, created: now, expires: now + GUEST_TTL_MS };
     guests().push(g);
     saveConfig();
     log('пущен гость: ' + name);
     return endJson(res, 200, guestView(req, g));
+  }
+  if (url.pathname === '/api/guests/extend') {
+    const g = guests().find((x) => x.id === body.id);
+    if (!g) return endJson(res, 404, { error: 'Гостя уже нет — пусти его заново' });
+    g.expires = Date.now() + GUEST_TTL_MS;
+    saveConfig();
+    return endJson(res, 200, { ok: true, guests: guests().map((x) => guestView(req, x)) });
   }
   if (url.pathname === '/api/guests/revoke') {
     const before = guests().length;
@@ -449,7 +468,7 @@ async function handle(req, res) {
         mode: browser ? 'browser' : 'userscript',
         browserFound: browser ? !!browser.findBrowser() : null,
         telegram: telegram ? telegram.info() : null,
-        guests: guests().map((g) => ({ id: g.id, name: g.name, lastSeen: g.lastSeen || null })),
+        guests: guests().map((g) => ({ id: g.id, name: g.name, lastSeen: g.lastSeen || null, expires: expiresOf(g) })),
       });
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });

@@ -62,7 +62,8 @@
   .guests { margin-top: 18px; background: var(--card); border-radius: 14px; padding: 14px; }
   .guests h3 { margin: 0 0 4px; font-size: 16px; }
   .guests .row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
-  .guests .row .nm { flex: 1; min-width: 0; }
+  .guests .row { flex-wrap: wrap; }
+  .guests .row .nm { flex: 1 1 100%; min-width: 0; }
   .guests .row .nm small { display: block; color: var(--muted); font-size: 12px; }
   .small { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; }
   .small.danger { color: var(--err); border-color: #5a2a28; }
@@ -126,8 +127,8 @@
   <!-- Только у хозяина: гостевой доступ, который можно закрыть в любой момент. -->
   <div class="guests" id="guestsCard" hidden>
     <h3>Гости</h3>
-    <div class="muted" style="font-size:13px">Дай гостю отсканировать QR с твоего экрана — он сможет управлять музыкой,
-      пока ты не закроешь доступ. Гость должен быть в том же Wi-Fi.</div>
+    <div class="muted" style="font-size:13px">Дай гостю отсканировать QR с твоего экрана — он сможет управлять музыкой
+      сутки или пока ты не закроешь доступ. Гость должен быть в том же Wi-Fi.</div>
     <button class="wide" id="addGuest">Пустить гостя</button>
     <div id="guestList"></div>
     <div style="display:flex;gap:8px;justify-content:space-between;margin-top:10px;flex-wrap:wrap">
@@ -143,7 +144,7 @@
 <div class="sheet" id="guestSheet" hidden>
   <div class="box">
     <h3 id="guestSheetTitle">Гость</h3>
-    <p>Пусть гость наведёт камеру своего телефона на этот код.</p>
+    <p>Пусть гость наведёт камеру своего телефона на этот код. Доступ — на сутки.</p>
     <div id="guestQr"></div>
     <button class="small" id="shareGuest">Отправить ссылку</button>
     <button class="wide" id="closeSheet">Готово</button>
@@ -241,6 +242,10 @@ function renderState(s) {
 }
 
 // ---------- гости (только хозяин) ----------
+const left = (t) => {
+  const m = Math.max(0, Math.round((t - Date.now()) / 60000));
+  return m >= 60 ? `ещё ${Math.floor(m / 60)} ч` : `ещё ${m} мин`;
+};
 const ago = (t) => {
   if (!t) return 'ещё не заходил';
   const m = Math.round((Date.now() - t) / 60000);
@@ -254,10 +259,14 @@ function renderGuests(list) {
   for (const g of list) {
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = '<div class="nm"><b></b><small></small></div><button class="small">QR</button><button class="small danger">Закрыть доступ</button>';
+    row.innerHTML = '<div class="nm"><b></b><small></small></div><button class="small">QR</button><button class="small">+ сутки</button><button class="small danger">Закрыть</button>';
     row.querySelector('b').textContent = g.name;
-    row.querySelector('small').textContent = ago(g.lastSeen);
-    const [qrBtn, revokeBtn] = row.querySelectorAll('button');
+    row.querySelector('small').textContent = `${ago(g.lastSeen)} · ${left(g.expires)}`;
+    const [qrBtn, extendBtn, revokeBtn] = row.querySelectorAll('button');
+    extendBtn.onclick = async () => {
+      renderGuests((await api('/api/guests/extend', { id: g.id })).guests);
+      toast(`«${g.name}»: доступ ещё на сутки`);
+    };
     qrBtn.onclick = () => showGuestQr(g);
     revokeBtn.onclick = async () => {
       if (!confirm(`Закрыть доступ «${g.name}»?`)) return;

@@ -251,7 +251,8 @@ function renderGuests(list) {
     const m = g.lastSeen ? Math.round((Date.now() - g.lastSeen) / 60000) : null;
     row.innerHTML = '<b></b> <span class="muted"></span> · <a href="#">закрыть доступ</a>';
     row.querySelector('b').textContent = g.name;
-    row.querySelector('span').textContent = m === null ? 'ещё не заходил' : m < 1 ? 'сейчас на связи' : `был ${m} мин назад`;
+    const h = Math.max(0, Math.round((g.expires - Date.now()) / 3600000));
+    row.querySelector('span').textContent = (m === null ? 'ещё не заходил' : m < 1 ? 'сейчас на связи' : `был ${m} мин назад`) + ` · доступ ещё ~${h} ч`;
     row.querySelector('a').onclick = (e) => { e.preventDefault(); revokeGuests({ id: g.id }); };
     box.appendChild(row);
   }
