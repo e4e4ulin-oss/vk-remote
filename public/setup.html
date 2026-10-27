@@ -144,12 +144,14 @@
       <form id="tgForm" class="row"><input id="tgToken" placeholder="Ключ бота от @BotFather" autocomplete="off"><button class="btn">Подключить</button></form>
     </div>
     <div id="tgPair" hidden>
-      <p>Наведи камеру телефона на код — откроется бот, нажми <b>«Старт»</b>. После этого бот слушается только тебя.</p>
+      <p>Открой бота в Telegram и нажми <b>«Старт»</b> — или наведи камеру телефона на код. Бот запомнит того, кто нажал
+        «Старт» первым, и дальше будет слушаться только его.</p>
       <div id="tgQr" class="smallqr"></div>
       <a id="tgLink" target="_blank"></a>
     </div>
     <div id="tgBound" hidden>
-      <p>✓ Бот <a id="tgBotLink" target="_blank"></a> подключён. Сообщение «Сейчас играет» с кнопками — в чате с ним.</p>
+      <p>✓ Бот <a id="tgBotLink" target="_blank"></a> подключён и слушается <b id="tgBoundTo"></b>. Сообщение «Сейчас играет» с кнопками — в чате с ним.</p>
+      <p class="muted">Не тот человек? Нажми «Привязать к другому телефону» и отсканируй QR-код с нужного телефона.</p>
     </div>
     <div id="tgActions" hidden>
       <a href="#" id="tgUnbind" class="muted">Привязать к другому телефону</a> ·
@@ -226,6 +228,7 @@ function renderTelegram(t) {
   document.getElementById('tgPair').hidden = !(t.enabled && !t.bound && t.link);
   document.getElementById('tgBound').hidden = !(t.enabled && t.bound);
   document.getElementById('tgActions').hidden = !t.enabled;
+  document.getElementById('tgBoundTo').textContent = t.boundTo || '';
   if (t.bot) {
     const a = document.getElementById('tgBotLink');
     a.href = 'https://t.me/' + t.bot; a.textContent = '@' + t.bot;

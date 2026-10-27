@@ -2,8 +2,9 @@
 // и кнопки ⏮ ⏯ ⏭ под ним. Работает откуда угодно — ПК сам опрашивает Telegram, входящих подключений нет.
 //
 // Один бот — один ПК: Telegram отдаёт обновления бота только одному получателю, второй ПК с тем же
-// ключом получил бы ошибку 409. Бот слушается только привязанного чата: привязка — по ссылке
-// t.me/<бот>?start=<код> со страницы настройки.
+// ключом получил бы ошибку 409. Бот слушается только привязанного чата. Пока бот ни к кому не
+// привязан, его забирает первый, кто нажмёт «Старт» (так проще всего для человека); перепривязать
+// к другому телефону — по ссылке t.me/<бот>?start=<код> со страницы настройки.
 
 'use strict';
 const crypto = require('crypto');
@@ -102,20 +103,20 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
     if (u.message && typeof u.message.text === 'string') {
       const chatId = u.message.chat.id;
       const text = u.message.text.trim();
-      const m = text.match(/^\/start(?:@\w+)?\s+(\S+)/);
-      if (m) {
-        if (m[1] === pairCode()) {
-          tg().chatId = chatId;
-          tg().messageId = null;
-          saveConfig();
-          log('бот: привязан чат ' + chatId);
-          await call('sendMessage', { chat_id: chatId, text: 'Готово! Этот бот теперь управляет музыкой ВК на твоём компьютере.' });
-          return showStatus({ fresh: true });
-        }
-        return call('sendMessage', { chat_id: chatId, text: 'Код не подошёл. Отсканируй QR-код бота на странице настройки пульта на компьютере.' });
+      const m = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?/);
+      // Привязка: свободного бота забирает первый «Старт»; занятого — только по коду из QR.
+      if (m && (!tg().chatId || m[1] === pairCode())) {
+        const from = u.message.from || {};
+        tg().chatId = chatId;
+        tg().chatName = from.username ? '@' + from.username : [from.first_name, from.last_name].filter(Boolean).join(' ') || null;
+        tg().messageId = null;
+        saveConfig();
+        log('бот: привязан чат ' + chatId);
+        await call('sendMessage', { chat_id: chatId, text: 'Готово! Этот бот теперь показывает, что играет в ВК на твоём компьютере, и переключает треки.' });
+        return showStatus({ fresh: true });
       }
-      if (!tg().chatId) {
-        return call('sendMessage', { chat_id: chatId, text: 'Чтобы подключить бота, отсканируй его QR-код на странице настройки пульта на компьютере.' });
+      if (m && m[1] && chatId !== tg().chatId) {
+        return call('sendMessage', { chat_id: chatId, text: 'Код не подошёл. Отсканируй QR-код бота на странице настройки пульта на компьютере.' });
       }
       if (chatId !== tg().chatId) {
         return call('sendMessage', { chat_id: chatId, text: 'Этот бот привязан к другому человеку.' });
@@ -172,6 +173,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
     if (t.token !== token) {
       t.token = token || null;
       t.chatId = null;
+      t.chatName = null;
       t.messageId = null;
       t.pairCode = null;
       me = null;
@@ -183,6 +185,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
 
   function unbind() {
     tg().chatId = null;
+    tg().chatName = null;
     tg().messageId = null;
     tg().pairCode = null;
     saveConfig();
@@ -195,6 +198,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
       status,
       bot: me ? me.username : null,
       bound: !!t.chatId,
+      boundTo: t.chatId ? t.chatName || 'чат ' + t.chatId : null,
       link: me ? `https://t.me/${me.username}?start=${pairCode()}` : null,
     };
   }
