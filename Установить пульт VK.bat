@@ -8,6 +8,8 @@ set "REPO_ZIP=https://github.com/e4e4ulin-oss/vk-remote/archive/refs/heads/main.
 rem Ключ Telegram-бота. Пусто — без бота. Заполняется страницей настройки
 rem («Установщик для друга со своим ботом»); в публичной версии всегда пусто.
 set "TG_TOKEN="
+rem Код подписчика: по ссылке t.me/<бот>?start=w<код> тот, кто собрал установщик, видит, что играет.
+set "TG_WATCH="
 
 echo.
 echo  Устанавливаю пульт для музыки ВК. Это займёт минуту-две.
@@ -60,7 +62,7 @@ if not exist "%VKR%\app\server.js" goto :fail
 rem ---- 3. Брандмауэр, ярлык на рабочем столе, первый запуск ----
 echo  [3/3] Настраиваю...
 if defined TG_TOKEN (
-  "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%" --tg-token "%TG_TOKEN%"
+  "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%" --tg-token "%TG_TOKEN%" --tg-watch "%TG_WATCH%"
 ) else (
   "%NODE%" "%VKR%\app\server.js" --install --data "%VKR%"
 )

@@ -1,10 +1,15 @@
-// Telegram-бот пульта: одно сообщение «Сейчас играет», которое обновляется при смене трека,
-// и кнопки ⏮ ⏯ ⏭ под ним. Работает откуда угодно — ПК сам опрашивает Telegram, входящих подключений нет.
+// Telegram-бот пульта: сообщение «Сейчас играет», которое обновляется при смене трека.
+// Работает откуда угодно — ПК сам опрашивает Telegram, входящих подключений нет.
 //
-// Один бот — один ПК: Telegram отдаёт обновления бота только одному получателю, второй ПК с тем же
-// ключом получил бы ошибку 409. Бот слушается только привязанного чата. Пока бот ни к кому не
-// привязан, его забирает первый, кто нажмёт «Старт» (так проще всего для человека); перепривязать
-// к другому телефону — по ссылке t.me/<бот>?start=<код> со страницы настройки.
+// Кто есть кто:
+//   хозяин     — человек за этим ПК: видит трек и управляет кнопками ⏮ ⏯ ⏭. Свободного бота
+//                забирает первый «Старт»; перепривязать — ссылкой с кодом из QR на странице настройки.
+//   подписчики — видят, что играет, без управления, и кнопку «Найти в VK», чтобы добавить трек себе.
+//                Подписка — только по ссылке t.me/<бот>?start=w<код> (код знает тот, кто собрал
+//                установщик); список подписчиков виден хозяину на странице настройки.
+//
+// Один бот работает на одном ПК: Telegram отдаёт обновления бота только одному получателю, второй
+// ПК с тем же ключом получил бы ошибку 409. Смотреть сообщения бота могут сколько угодно людей.
 
 'use strict';
 const crypto = require('crypto');
@@ -13,83 +18,115 @@ const API = process.env.VK_REMOTE_TG_API || 'https://api.telegram.org'; // по�
 const POLL_TIMEOUT_S = 25;
 const UPDATE_DEBOUNCE_MS = 1500;
 
+const escape = (s) => String(s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const nameOf = (from = {}) =>
+  from.username ? '@' + from.username : [from.first_name, from.last_name].filter(Boolean).join(' ') || null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Разовый запрос к Bot API (используется и для проверки ключа при сборке установщика для друга).
+async function botCall(token, method, params = {}, timeoutS = 15) {
+  const r = await fetch(`${API}/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(timeoutS * 1000),
+  });
+  const j = await r.json().catch(() => ({ ok: false, description: 'bad response' }));
+  if (!j.ok) {
+    const err = new Error(j.description || 'telegram error');
+    err.code = j.error_code;
+    throw err;
+  }
+  return j.result;
+}
+
 function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) {
-  let me = null;           // { username, first_name } бота
+  let me = null;           // { username } бота
   let status = 'off';      // off | connecting | ok | conflict | bad-token | network
   let stopped = false;
-  let lastShown = '';
   let updateTimer = null;
-  let wake = null; // будит цикл, когда на странице настройки ввели ключ
+  let wake = null;         // будит цикл, когда на странице настройки ввели ключ
+  const lastShown = new Map(); // chatId -> что сейчас показано в его сообщении
 
   const tg = () => config.telegram || (config.telegram = {});
+  const watchers = () => tg().watchers || (tg().watchers = []);
+  const call = (method, params) => botCall(tg().token, method, params, POLL_TIMEOUT_S + 10);
 
-  async function call(method, params = {}) {
-    const r = await fetch(`${API}/bot${tg().token}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout((POLL_TIMEOUT_S + 10) * 1000),
-    });
-    const j = await r.json().catch(() => ({ ok: false, description: 'bad response' }));
-    if (!j.ok) {
-      const err = new Error(j.description || 'telegram error');
-      err.code = j.error_code;
-      throw err;
-    }
-    return j.result;
-  }
-
-  function pairCode() {
-    if (!tg().pairCode) {
-      tg().pairCode = crypto.randomBytes(4).toString('hex');
+  function code(field) {
+    if (!tg()[field]) {
+      tg()[field] = crypto.randomBytes(4).toString('hex');
       saveConfig();
     }
-    return tg().pairCode;
+    return tg()[field];
   }
 
-  const escape = (s) => String(s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
-
-  function render() {
+  function render(forOwner) {
     const np = getNowPlaying() || {};
     let text;
     if (!np.title) text = '🎵 Пока ничего не играет';
     else if (np.ad) text = `📢 Реклама VK — дальше:\n<b>${escape(np.title)}</b>\n${escape(np.artist)}`;
     else text = `${np.playing ? '▶️ Сейчас играет' : '⏸ На паузе'}:\n<b>${escape(np.title)}</b>\n${escape(np.artist)}`;
-    const keyboard = {
-      inline_keyboard: [[
+    const rows = [];
+    if (forOwner) {
+      rows.push([
         { text: '⏮', callback_data: 'prev' },
         { text: np.playing ? '⏸' : '▶️', callback_data: 'toggle' },
         { text: '⏭', callback_data: 'next' },
-      ]],
-    };
-    return { text, keyboard };
+      ]);
+    }
+    if (np.title && !np.ad) {
+      // Поиск трека в VK: на телефоне откроется приложение VK, там трек добавляется себе обычным «+».
+      const q = [np.artist, np.title].filter(Boolean).join(' ');
+      rows.push([{ text: '🔍 Найти в VK', url: 'https://vk.com/audio?q=' + encodeURIComponent(q) }]);
+    }
+    return { text, keyboard: { inline_keyboard: rows } };
+  }
+
+  // Все, кому показываем сообщение: хозяин и подписчики. holder — объект, где хранится messageId.
+  function targets() {
+    const list = [];
+    if (tg().chatId) list.push({ chatId: tg().chatId, owner: true, holder: tg() });
+    for (const w of watchers()) list.push({ chatId: w.chatId, owner: false, holder: w });
+    return list;
   }
 
   // Обновляем сообщение на месте; если его удалили или оно слишком старое — присылаем новое.
-  async function showStatus({ fresh = false } = {}) {
-    const chatId = tg().chatId;
-    if (!chatId || status !== 'ok') return;
-    const { text, keyboard } = render();
+  async function showTo(t, fresh) {
+    const { text, keyboard } = render(t.owner);
     const key = text + JSON.stringify(keyboard);
-    if (!fresh && key === lastShown) return;
+    if (!fresh && lastShown.get(t.chatId) === key) return;
     try {
-      if (!fresh && tg().messageId) {
+      if (!fresh && t.holder.messageId) {
         await call('editMessageText', {
-          chat_id: chatId, message_id: tg().messageId, text, parse_mode: 'HTML', reply_markup: keyboard,
+          chat_id: t.chatId, message_id: t.holder.messageId, text, parse_mode: 'HTML', reply_markup: keyboard,
         });
       } else {
         const m = await call('sendMessage', {
-          chat_id: chatId, text, parse_mode: 'HTML', reply_markup: keyboard, disable_notification: true,
+          chat_id: t.chatId, text, parse_mode: 'HTML', reply_markup: keyboard, disable_notification: true,
         });
-        tg().messageId = m.message_id;
+        t.holder.messageId = m.message_id;
         saveConfig();
       }
-      lastShown = key;
+      lastShown.set(t.chatId, key);
     } catch (e) {
-      if (/not modified/i.test(e.message)) { lastShown = key; return; }
-      if (!fresh && /message to edit not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) return showStatus({ fresh: true });
-      if (e.code === 403) { log('бот: чат закрыт пользователем'); tg().chatId = null; saveConfig(); return; }
+      if (/not modified/i.test(e.message)) { lastShown.set(t.chatId, key); return; }
+      if (!fresh && /message to edit not found|can't be edited|MESSAGE_ID_INVALID/i.test(e.message)) return showTo(t, true);
+      if (e.code === 403) {
+        // Человек заблокировал бота — больше ему не пишем.
+        log('бот: чат закрыт ' + t.chatId);
+        if (t.owner) tg().chatId = null;
+        else tg().watchers = watchers().filter((w) => w.chatId !== t.chatId);
+        saveConfig();
+        return;
+      }
       log('бот: не удалось обновить сообщение — ' + e.message);
+    }
+  }
+
+  async function showStatus({ fresh = false, only = null } = {}) {
+    if (status !== 'ok') return;
+    for (const t of targets()) {
+      if (only === null || t.chatId === only) await showTo(t, fresh);
     }
   }
 
@@ -99,36 +136,58 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
     updateTimer = setTimeout(() => { updateTimer = null; showStatus(); }, UPDATE_DEBOUNCE_MS);
   }
 
-  async function handleUpdate(u) {
-    if (u.message && typeof u.message.text === 'string') {
-      const chatId = u.message.chat.id;
-      const text = u.message.text.trim();
-      const m = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?/);
-      // Привязка: свободного бота забирает первый «Старт»; занятого — только по коду из QR.
-      if (m && (!tg().chatId || m[1] === pairCode())) {
-        const from = u.message.from || {};
-        tg().chatId = chatId;
-        tg().chatName = from.username ? '@' + from.username : [from.first_name, from.last_name].filter(Boolean).join(' ') || null;
-        tg().messageId = null;
+  const say = (chatId, text) => call('sendMessage', { chat_id: chatId, text });
+
+  async function handleMessage(msg) {
+    const chatId = msg.chat.id;
+    const text = msg.text.trim();
+    const isWatcher = watchers().some((w) => w.chatId === chatId);
+    const m = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?/);
+
+    // Подписка по ссылке с кодом подписчика — проверяем первой, чтобы подписчик не стал хозяином.
+    if (m && m[1] && tg().watchCode && m[1] === 'w' + tg().watchCode) {
+      if (chatId === tg().chatId) return say(chatId, 'Ты и так хозяин этого бота.');
+      if (!isWatcher) {
+        watchers().push({ chatId, name: nameOf(msg.from), messageId: null });
         saveConfig();
-        log('бот: привязан чат ' + chatId);
-        await call('sendMessage', { chat_id: chatId, text: 'Готово! Этот бот теперь показывает, что играет в ВК на твоём компьютере, и переключает треки.' });
-        return showStatus({ fresh: true });
+        log('бот: новый подписчик ' + chatId);
       }
-      if (m && m[1] && chatId !== tg().chatId) {
-        return call('sendMessage', { chat_id: chatId, text: 'Код не подошёл. Отсканируй QR-код бота на странице настройки пульта на компьютере.' });
+      await say(chatId, 'Готово! Здесь будет видно, что сейчас играет. Понравился трек — кнопка «Найти в VK» под сообщением. Отписаться — /stop.');
+      return showStatus({ fresh: true, only: chatId });
+    }
+
+    // Хозяин: свободного бота забирает первый «Старт» (не подписчик); занятого — только код из QR.
+    if (m && ((!tg().chatId && !isWatcher) || (m[1] && m[1] === code('pairCode')))) {
+      tg().chatId = chatId;
+      tg().chatName = nameOf(msg.from);
+      tg().messageId = null;
+      tg().watchers = watchers().filter((w) => w.chatId !== chatId);
+      saveConfig();
+      log('бот: привязан хозяин ' + chatId);
+      await say(chatId, 'Готово! Этот бот показывает, что играет в ВК на твоём компьютере, и переключает треки.');
+      return showStatus({ fresh: true, only: chatId });
+    }
+    if (m && m[1]) return say(chatId, 'Ссылка не подошла. Попроси новую у того, кто настраивал пульт.');
+
+    if (chatId === tg().chatId || isWatcher) {
+      if (/^\/stop\b/.test(text) && isWatcher) {
+        tg().watchers = watchers().filter((w) => w.chatId !== chatId);
+        saveConfig();
+        return say(chatId, 'Отписал. Вернуться — по той же ссылке.');
       }
-      if (chatId !== tg().chatId) {
-        return call('sendMessage', { chat_id: chatId, text: 'Этот бот привязан к другому человеку.' });
-      }
-      if (/^\/(now|start)\b/.test(text)) return showStatus({ fresh: true });
+      if (/^\/(now|start)\b/.test(text)) return showStatus({ fresh: true, only: chatId });
       return;
     }
+    return say(chatId, tg().chatId ? 'Этот бот привязан к другому человеку.' : 'Пульт на компьютере пока не настроен.');
+  }
+
+  async function handleUpdate(u) {
+    if (u.message && typeof u.message.text === 'string') return handleMessage(u.message);
     if (u.callback_query) {
       const q = u.callback_query;
-      const allowed = q.message && q.message.chat.id === tg().chatId;
-      const type = allowed && ['prev', 'toggle', 'next'].includes(q.data) ? q.data : null;
-      let answer = 'Этот бот привязан к другому человеку';
+      const fromOwner = q.message && q.message.chat.id === tg().chatId;
+      const type = fromOwner && ['prev', 'toggle', 'next'].includes(q.data) ? q.data : null;
+      let answer = 'Управлять может только хозяин пульта';
       if (type) {
         const r = await runCommand({ type });
         answer = r && r.ok ? '' : (r && r.error) || 'Не получилось';
@@ -152,7 +211,7 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
           me = await call('getMe');
           status = 'ok';
           log('бот подключён: @' + me.username);
-          showStatus({ fresh: !tg().messageId });
+          showStatus();
         }
         const updates = await call('getUpdates', { offset, timeout: POLL_TIMEOUT_S, allowed_updates: ['message', 'callback_query'] });
         status = 'ok';
@@ -171,12 +230,9 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
   function setToken(token) {
     const t = tg();
     if (t.token !== token) {
-      t.token = token || null;
-      t.chatId = null;
-      t.chatName = null;
-      t.messageId = null;
-      t.pairCode = null;
+      config.telegram = { token: token || null };
       me = null;
+      lastShown.clear();
       status = token ? 'connecting' : 'off';
       saveConfig();
       if (wake) wake();
@@ -191,6 +247,11 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
     saveConfig();
   }
 
+  function removeWatchers() {
+    tg().watchers = [];
+    saveConfig();
+  }
+
   function info() {
     const t = tg();
     return {
@@ -199,14 +260,13 @@ function createTelegram({ config, saveConfig, getNowPlaying, runCommand, log }) 
       bot: me ? me.username : null,
       bound: !!t.chatId,
       boundTo: t.chatId ? t.chatName || 'чат ' + t.chatId : null,
-      link: me ? `https://t.me/${me.username}?start=${pairCode()}` : null,
+      watchers: watchers().map((w) => w.name || 'чат ' + w.chatId),
+      link: me ? `https://t.me/${me.username}?start=${code('pairCode')}` : null,
     };
   }
 
   loop();
-  return { onState, setToken, unbind, info, stop: () => (stopped = true) };
+  return { onState, setToken, unbind, removeWatchers, info, stop: () => (stopped = true) };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-module.exports = { createTelegram };
+module.exports = { createTelegram, botCall };

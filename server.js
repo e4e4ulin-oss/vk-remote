@@ -314,10 +314,11 @@ async function handle(req, res) {
     return endJson(res, 200, { shown });
   }
 
-  if (url.pathname === '/local/telegram' || url.pathname === '/local/telegram/unbind') {
+  if (url.pathname === '/local/telegram' || url.pathname === '/local/telegram/unbind' || url.pathname === '/local/telegram/unwatch') {
     if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
     if (!telegram) return endJson(res, 503, { error: 'бот ещё не запущен' });
     if (url.pathname === '/local/telegram/unbind') telegram.unbind();
+    else if (url.pathname === '/local/telegram/unwatch') telegram.removeWatchers();
     else {
       const token = String((await readBody(req)).token || '').trim();
       if (token && !/^\d+:[\w-]{30,}$/.test(token)) return endJson(res, 400, { error: 'Это не похоже на ключ бота' });
@@ -326,20 +327,52 @@ async function handle(req, res) {
     return endJson(res, 200, telegram.info());
   }
 
+  // Бот для друга: проверяем ключ у Telegram (разовый getMe — бот при этом не запускается здесь,
+  // он будет работать на ПК друга) и выдаём код подписчика: по ссылке t.me/<бот>?start=w<код>
+  // хозяин этого ПК сможет видеть, что играет у друга.
+  if (url.pathname === '/local/friend-bot') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    const token = String((await readBody(req)).token || '').trim();
+    if (!/^\d+:[\w-]{30,}$/.test(token)) return endJson(res, 400, { error: 'Это не похоже на ключ бота — он выглядит как 123456789:AA…' });
+    if (config.telegram && config.telegram.token === token) {
+      return endJson(res, 400, { error: 'Этот бот подключён на этом компьютере. Для друга нужен отдельный бот — или сначала отключи его здесь.' });
+    }
+    let bot;
+    try {
+      bot = await require('./telegram').botCall(token, 'getMe');
+    } catch (e) {
+      return endJson(res, 400, { error: e.code === 401 || e.code === 404 ? 'Telegram не принял ключ — скопируй его из @BotFather ещё раз' : 'Нет связи с Telegram: ' + e.message });
+    }
+    const watch = crypto.randomBytes(4).toString('hex');
+    return endJson(res, 200, {
+      bot: bot.username,
+      watchLink: `https://t.me/${bot.username}?start=w${watch}`,
+      download: `/local/friend-installer?token=${encodeURIComponent(token)}&watch=${watch}`,
+    });
+  }
+
   // Установщик для друга со своим ботом: ключ подставляется в строку set "TG_TOKEN=" — только с ПК.
   // Файл отдаёт сервер, а не страница: имя с кириллицей из атрибута download Chromium заменяет на «download».
   if (url.pathname === '/local/friend-installer') {
     if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
     const token = String(url.searchParams.get('token') || '').trim();
+    const watch = String(url.searchParams.get('watch') || '').trim();
     if (!/^\d+:[\w-]{30,}$/.test(token)) return endJson(res, 400, { error: 'Это не похоже на ключ бота' });
+    if (watch && !/^[0-9a-f]{8}$/.test(watch)) return endJson(res, 400, { error: 'bad watch code' });
     const text = fs.readFileSync(path.join(__dirname, INSTALLER_NAME), 'utf8');
-    if (!text.includes('set "TG_TOKEN="\r\n')) return endJson(res, 500, { error: 'Шаблон установщика не найден — обнови пульт' });
+    if (!text.includes('set "TG_TOKEN="\r\n') || !text.includes('set "TG_WATCH="\r\n')) {
+      return endJson(res, 500, { error: 'Шаблон установщика не найден — обнови пульт' });
+    }
     res.writeHead(200, {
       'Content-Type': 'application/octet-stream',
       'Cache-Control': 'no-store',
       'Content-Disposition': `attachment; filename="VK-Remote-install.bat"; filename*=UTF-8''${encodeURIComponent(INSTALLER_NAME)}`,
     });
-    return res.end(text.replace('set "TG_TOKEN="\r\n', `set "TG_TOKEN=${token}"\r\n`));
+    return res.end(
+      text
+        .replace('set "TG_TOKEN="\r\n', `set "TG_TOKEN=${token}"\r\n`)
+        .replace('set "TG_WATCH="\r\n', `set "TG_WATCH=${watch}"\r\n`)
+    );
   }
 
   if (url.pathname === '/local/launch') {
@@ -567,11 +600,16 @@ async function installAll() {
   const { installFirewall, installShortcut, SHORTCUT_NAME } = require('./install');
   fs.mkdirSync(path.join(DATA_DIR, 'runtime'), { recursive: true });
   const opts = { dataDir: DATA_DIR, appDir: __dirname, nodePath: process.execPath };
-  // Ключ Telegram-бота из установщика «для друга» (строка TG_TOKEN в начале bat-файла).
-  const tgArg = process.argv.indexOf('--tg-token');
-  const tgToken = tgArg > 0 ? String(process.argv[tgArg + 1] || '').trim() : '';
-  if (tgToken && (!config.telegram || config.telegram.token !== tgToken)) {
-    config.telegram = { token: tgToken };
+  // Ключ Telegram-бота и код подписчика из установщика «для друга» (строки TG_TOKEN и TG_WATCH).
+  const argOf = (name) => {
+    const i = process.argv.indexOf(name);
+    return i > 0 ? String(process.argv[i + 1] || '').trim() : '';
+  };
+  const tgToken = argOf('--tg-token');
+  const tgWatch = argOf('--tg-watch');
+  if (tgToken) {
+    if (!config.telegram || config.telegram.token !== tgToken) config.telegram = { token: tgToken };
+    if (tgWatch) config.telegram.watchCode = tgWatch;
     saveConfig();
     console.log('Telegram-бот из установщика сохранён.');
   }

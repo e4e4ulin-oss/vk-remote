@@ -153,6 +153,10 @@
       <p>✓ Бот <a id="tgBotLink" target="_blank"></a> подключён и слушается <b id="tgBoundTo"></b>. Сообщение «Сейчас играет» с кнопками — в чате с ним.</p>
       <p class="muted">Не тот человек? Нажми «Привязать к другому телефону» и отсканируй QR-код с нужного телефона.</p>
     </div>
+    <div id="tgWatchers" hidden>
+      <p>👀 Видят, что у тебя играет (без управления): <b id="tgWatchList"></b> ·
+        <a href="#" id="tgUnwatch" class="muted">убрать всех</a></p>
+    </div>
     <div id="tgActions" hidden>
       <a href="#" id="tgUnbind" class="muted">Привязать к другому телефону</a> ·
       <a href="#" id="tgRemove" class="muted">Отключить бота</a>
@@ -163,10 +167,18 @@
   <div class="card wide">
     <b>Установщик для друга со своим ботом</b>
     <p class="muted" style="margin:4px 0 10px">Создай для друга отдельного бота в @BotFather и вставь его ключ — скачается
-      «Установить пульт VK.bat» с этим ботом внутри. Отправь файл другу: после установки ему останется отсканировать QR бота.
-      Ключ никуда не сохраняется. <b>Этого бота не подключай у себя</b> — один бот работает только на одном компьютере.</p>
+      «Установить пульт VK.bat» с этим ботом внутри. Бот будет работать на компьютере друга: друг нажимает в нём «Старт»
+      и управляет музыкой, а ты по своей ссылке видишь, что у него играет, и можешь найти трек в VK.
+      Ключ здесь не сохраняется. <b>Этого бота не подключай у себя</b> — бот работает только на одном компьютере.
+      И скажи другу, что ты видишь его музыку: он увидит тебя в списке на своей странице настройки.</p>
     <form id="friendForm" class="row"><input id="friendToken" placeholder="Ключ бота для друга" autocomplete="off"><button class="btn">Скачать установщик</button></form>
     <p class="muted" id="friendError"></p>
+    <div id="friendWatch" hidden>
+      <p><b>Твоя ссылка, чтобы видеть, что играет у друга</b> — открой её и нажми «Старт» (можно сразу, бот ответит,
+        когда друг установит пульт). Именно по этой ссылке, а не просто через поиск бота: иначе бот решит, что хозяин — ты.</p>
+      <div id="friendQr" class="smallqr"></div>
+      <a id="friendLink" target="_blank"></a>
+    </div>
   </div>
 
 <script src="/qrcode.js"></script>
@@ -229,6 +241,9 @@ function renderTelegram(t) {
   document.getElementById('tgBound').hidden = !(t.enabled && t.bound);
   document.getElementById('tgActions').hidden = !t.enabled;
   document.getElementById('tgBoundTo').textContent = t.boundTo || '';
+  const watchers = t.watchers || [];
+  document.getElementById('tgWatchers').hidden = !(t.enabled && watchers.length);
+  document.getElementById('tgWatchList').textContent = watchers.join(', ');
   if (t.bot) {
     const a = document.getElementById('tgBotLink');
     a.href = 'https://t.me/' + t.bot; a.textContent = '@' + t.bot;
@@ -248,6 +263,7 @@ const tgPost = async (path, body) => {
 };
 document.getElementById('tgForm').onsubmit = (e) => { e.preventDefault(); tgPost('/local/telegram', { token: document.getElementById('tgToken').value }); };
 document.getElementById('tgUnbind').onclick = (e) => { e.preventDefault(); tgPost('/local/telegram/unbind'); };
+document.getElementById('tgUnwatch').onclick = (e) => { e.preventDefault(); if (confirm('Убрать всех, кто видит твою музыку?')) tgPost('/local/telegram/unwatch'); };
 document.getElementById('tgRemove').onclick = (e) => { e.preventDefault(); if (confirm('Отключить Telegram-бота на этом компьютере?')) tgPost('/local/telegram', { token: '' }); };
 
 // Установщик для друга: сервер подставляет ключ в строку set "TG_TOKEN=" и отдаёт файл.
@@ -255,13 +271,24 @@ document.getElementById('friendForm').onsubmit = async (e) => {
   e.preventDefault();
   const token = document.getElementById('friendToken').value.trim();
   const err = document.getElementById('friendError');
-  if (!/^\d+:[\w-]{30,}$/.test(token)) { err.textContent = 'Это не похоже на ключ бота — он выглядит как 123456789:AA…'; return; }
+  err.textContent = 'Проверяю ключ у Telegram…';
+  const r = await fetch('/local/friend-bot', { method: 'POST', headers: { 'X-VKR': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { err.textContent = j.error || 'Не получилось'; return; }
   const a = document.createElement('a');
-  a.href = '/local/friend-installer?token=' + encodeURIComponent(token);
+  a.href = j.download;
   document.body.appendChild(a);
   a.click();
   a.remove();
-  err.textContent = 'Готово — файл скачан. Отправь его другу.';
+  err.textContent = `Готово — установщик с ботом @${j.bot} скачан. Отправь его другу.`;
+  document.getElementById('friendWatch').hidden = false;
+  const link = document.getElementById('friendLink');
+  link.href = j.watchLink;
+  link.textContent = j.watchLink;
+  if (window.qrcode) {
+    const qr = qrcode(0, 'M'); qr.addData(j.watchLink); qr.make();
+    document.getElementById('friendQr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  }
 };
 
 function showQr(url) {
