@@ -47,6 +47,15 @@ $s.IconLocation = ${psStr(path.join(appDir, 'public', 'icon.ico') + ',0')}
 $s.Description = 'Пульт для музыки ВК с телефона'
 $s.WindowStyle = 7
 $s.Save()
+
+# Автозапуск при входе в Windows: сервер и значок в трее, без окон.
+$a = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'Пульт ВК.lnk'))
+$a.TargetPath = ${psStr(nodePath)}
+$a.Arguments = ${psStr(`"${path.join(appDir, 'server.js')}" --autostart --data "${dataDir}"`)}
+$a.WorkingDirectory = ${psStr(appDir)}
+$a.IconLocation = ${psStr(path.join(appDir, 'public', 'icon.ico') + ',0')}
+$a.WindowStyle = 7
+$a.Save()
 `;
   return runPs1(path.join(dataDir, 'runtime', 'shortcut.ps1'), body);
 }

@@ -65,6 +65,8 @@ let primaryId = null;
 let nowPlaying = null;   // { title, artist, cover, playing, position, duration, volume, mode }
 let list = { version: 0, id: null, title: '', tracks: [], error: null };
 let diag = null;
+// Значок в трее (tray.ps1): когда последний раз опрашивал сервер и ждёт ли он команду «покажи QR».
+const tray = { lastSeen: 0, showQr: false, spawns: 0 };
 let diagSeq = 0;
 let lastError = null;
 let cmdSeq = 0;
@@ -269,6 +271,32 @@ async function handle(req, res) {
     return;
   }
 
+  // Значок в трее — только с ПК. GET без побочных эффектов, кроме отметки «значок жив».
+  if (url.pathname === '/tray/poll' || url.pathname === '/tray/qr') {
+    if (!isLoopback(req)) return endJson(res, 403, { error: 'only from this PC' });
+    tray.lastSeen = Date.now();
+    if (url.pathname === '/tray/poll') {
+      const showQr = tray.showQr;
+      tray.showQr = false;
+      return endJson(res, 200, { showQr, agentOnline: !!pickPrimary() });
+    }
+    const urls = lanAddresses().map((ip) => `http://${ip}:${PORT}/?k=${config.token}`);
+    if (!urls.length) return endJson(res, 200, { url: 'ПК не подключён к сети', gif: null, count: 0, agentOnline: !!pickPrimary() });
+    const i = Math.abs(Number(url.searchParams.get('i')) || 0) % urls.length;
+    return endJson(res, 200, { url: urls[i], gif: qrGif(urls[i]), count: urls.length, agentOnline: !!pickPrimary() });
+  }
+
+  // Ярлык просит показать окно с QR. Ждём, пока значок заберёт просьбу: если значка нет,
+  // ярлык откроет страницу настройки в браузере.
+  if (url.pathname === '/local/show-qr') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    tray.showQr = true;
+    for (let i = 0; i < 30 && tray.showQr; i++) await new Promise((r) => setTimeout(r, 200));
+    const shown = !tray.showQr;
+    tray.showQr = false;
+    return endJson(res, 200, { shown });
+  }
+
   if (url.pathname === '/local/launch') {
     if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
     return endJson(res, 200, browser ? await browser.ensureBrowser() : { ok: false, error: 'not in browser mode' });
@@ -360,7 +388,40 @@ function startServer() {
     if (!process.env.VK_REMOTE_BG) console.log('Не закрывай это окно, пока пользуешься пультом.\n');
     if (process.env.VK_REMOTE_OPEN) openUrl(`http://127.0.0.1:${PORT}/setup`);
     if (browser) browser.watch();
+    startTray();
   });
+}
+
+function qrGif(text) {
+  const qrcode = require('./public/qrcode.js');
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  return qr.createDataURL(8, 16).replace(/^data:image\/gif;base64,/, '');
+}
+
+// Значок в трее живёт, пока работает сервер: сам выходит, если сервер пропал, а сервер
+// перезапускает значок, если тот перестал опрашивать (например, упал PowerShell).
+function startTray() {
+  if (process.platform !== 'win32' || !browser) return;
+  const spawnTray = () => {
+    tray.spawns++;
+    tray.lastSeen = Date.now();
+    const child = spawn(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', path.join(__dirname, 'tray.ps1'),
+        '-Port', String(PORT), '-Icon', path.join(__dirname, 'public', 'icon.ico')],
+      { windowsHide: true, stdio: 'ignore' }
+    );
+    child.on('error', (e) => log('значок в трее: ' + e.message));
+  };
+  spawnTray();
+  setInterval(() => {
+    if (Date.now() - tray.lastSeen > 20_000 && tray.spawns < 5) {
+      log('значок в трее не отвечает — перезапускаю');
+      spawnTray();
+    }
+  }, 30_000).unref();
 }
 
 function openUrl(url) {
@@ -434,8 +495,16 @@ async function openAll() {
     return false;
   }
   await localPost('/local/launch');
-  openUrl(`http://127.0.0.1:${PORT}/setup`);
+  const r = await localPost('/local/show-qr');
+  if (!r || !r.shown) openUrl(`http://127.0.0.1:${PORT}/setup`);
   return true;
+}
+
+// Автозапуск при входе в Windows: только сервер и значок в трее, без окна ВК и без страниц.
+// Окно ВК откроется по ярлыку, из меню значка или кнопкой на телефоне.
+async function autostart() {
+  process.env.VK_REMOTE_CDP = '1';
+  return (await ping()) || startInBackground();
 }
 
 // Разовая настройка после скачивания: брандмауэр (одно окно «Да» от Windows), ярлык, первый запуск.
@@ -445,7 +514,7 @@ async function installAll() {
   const opts = { dataDir: DATA_DIR, appDir: __dirname, nodePath: process.execPath };
   console.log('Разрешаю пульту доступ из домашней сети (Windows спросит «Разрешить изменения?» — нажми «Да»)...');
   console.log((await installFirewall(opts)) ? '  готово' : '  пропущено — Windows спросит про брандмауэр позже, нажми «Разрешить»');
-  console.log(`Создаю ярлык «${SHORTCUT_NAME}» на рабочем столе...`);
+  console.log(`Создаю ярлык «${SHORTCUT_NAME}» на рабочем столе и автозапуск при входе в Windows...`);
   console.log((await installShortcut(opts)) ? '  готово' : '  не получилось');
   await stopServer(); // если работала старая версия — перезапустим уже новую
   await new Promise((r) => setTimeout(r, 500));
@@ -458,6 +527,7 @@ const MODES = {
   '--background': startInBackground,
   '--open': openAll,
   '--install': installAll,
+  '--autostart': autostart,
 };
 const mode = process.argv.slice(2).find((a) => MODES[a]);
 if (mode) MODES[mode]().then((ok) => process.exit(ok ? 0 : 1));
