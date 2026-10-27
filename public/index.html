@@ -59,6 +59,23 @@
     background: #3a1e1e; color: #ffd9d6; border-radius: 12px; padding: 12px 14px; display: none; }
   pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; background: var(--card); padding: 10px; border-radius: 10px; max-height: 50vh; overflow: auto; }
   footer { display: flex; gap: 16px; justify-content: center; font-size: 13px; }
+  .guests { margin-top: 18px; background: var(--card); border-radius: 14px; padding: 14px; }
+  .guests h3 { margin: 0 0 4px; font-size: 16px; }
+  .guests .row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .guests .row .nm { flex: 1; min-width: 0; }
+  .guests .row .nm small { display: block; color: var(--muted); font-size: 12px; }
+  .small { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+  .small.danger { color: var(--err); border-color: #5a2a28; }
+  .wide { width: 100%; margin-top: 8px; padding: 11px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  .guestBadge { font-size: 12px; color: var(--muted); }
+  .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: grid; place-items: center; padding: 16px; z-index: 10; }
+  .sheet .box { background: #fff; color: #111; border-radius: 18px; padding: 18px; width: 100%; max-width: 360px; text-align: center; }
+  .sheet .box h3 { margin: 0 0 4px; }
+  .sheet .box p { margin: 4px 0 12px; color: #555; font-size: 14px; }
+  .sheet #guestQr svg { width: 100%; height: auto; display: block; }
+  .sheet .box .wide { margin-top: 12px; }
+  .sheet .box .small { color: #111; border-color: #ccc; margin-top: 8px; }
+  .blocked { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; text-align: center; padding: 24px; z-index: 20; }
 </style>
 </head>
 <body>
@@ -106,10 +123,36 @@
   <div class="msg" id="listMsg">Нажми «Обновить», чтобы загрузить список.</div>
   <div style="text-align:center"><button class="more" id="more" hidden>Загрузить ещё</button></div>
 
+  <!-- Только у хозяина: гостевой доступ, который можно закрыть в любой момент. -->
+  <div class="guests" id="guestsCard" hidden>
+    <h3>Гости</h3>
+    <div class="muted" style="font-size:13px">Дай гостю отсканировать QR с твоего экрана — он сможет управлять музыкой,
+      пока ты не закроешь доступ. Гость должен быть в том же Wi-Fi.</div>
+    <button class="wide" id="addGuest">Пустить гостя</button>
+    <div id="guestList"></div>
+    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:10px;flex-wrap:wrap">
+      <button class="small danger" id="revokeAll" hidden>Закрыть доступ всем гостям</button>
+      <button class="small" id="rotateOwner">Сменить мою ссылку</button>
+    </div>
+  </div>
+
   <footer><button class="link" id="diagBtn">Диагностика</button></footer>
   <pre id="diag" hidden></pre>
 </div>
 <div class="toast" id="toast"></div>
+<div class="sheet" id="guestSheet" hidden>
+  <div class="box">
+    <h3 id="guestSheetTitle">Гость</h3>
+    <p>Пусть гость наведёт камеру своего телефона на этот код.</p>
+    <div id="guestQr"></div>
+    <button class="small" id="shareGuest">Отправить ссылку</button>
+    <button class="wide" id="closeSheet">Готово</button>
+  </div>
+</div>
+<div class="blocked" id="blocked" hidden>
+  <div><h2>Доступа к пульту нет</h2><p class="muted">Хозяин закрыл доступ или ссылка устарела. Попроси новый QR-код.</p></div>
+</div>
+<script src="/qrcode.js"></script>
 
 <script>
 const TOKEN = new URLSearchParams(location.search).get('k') || '';
@@ -130,7 +173,11 @@ async function api(path, body) {
     headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (r.status === 403) throw new Error('Неверный ключ в ссылке');
+  if (r.status === 403) {
+    // Ключ отозван (гостю закрыли доступ) или сменён — показываем это, а не «сервер недоступен».
+    if (!path.startsWith('/api/guests') && path !== '/api/owner/rotate') $('blocked').hidden = false;
+    throw new Error('Нет доступа');
+  }
   return r.json();
 }
 
@@ -156,9 +203,16 @@ const fmt = (s) => {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 };
 
+let role = null;
 function renderState(s) {
+  if (s.role !== role) {
+    role = s.role;
+    $('guestsCard').hidden = role !== 'owner';
+    $('diagBtn').hidden = role !== 'owner';
+    if (role === 'owner') loadGuests();
+  }
   const dot = $('dot');
-  if (s.agentOnline) { dot.className = 'dot ok'; $('statusText').textContent = 'ПК на связи'; }
+  if (s.agentOnline) { dot.className = 'dot ok'; $('statusText').textContent = role === 'guest' ? 'ПК на связи · гостевой доступ' : 'ПК на связи'; }
   else if (s.mediaKeys) { dot.className = 'dot warn'; $('statusText').textContent = 'Вкладка VK не найдена — работают только кнопки ⏮ ⏯ ⏭'; }
   else { dot.className = 'dot'; $('statusText').textContent = 'Вкладка VK не на связи'; }
   if (s.canLaunch && !s.agentOnline) $('statusText').textContent = 'Окно VK на компьютере закрыто';
@@ -185,6 +239,69 @@ function renderState(s) {
   shownError = s.lastError;
   if (s.listVersion !== listVersion) { listVersion = s.listVersion; loadList(); }
 }
+
+// ---------- гости (только хозяин) ----------
+const ago = (t) => {
+  if (!t) return 'ещё не заходил';
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? 'сейчас на связи' : m < 60 ? `был ${m} мин назад` : `был ${Math.round(m / 60)} ч назад`;
+};
+let guestCache = [];
+function renderGuests(list) {
+  guestCache = list;
+  const box = $('guestList');
+  box.innerHTML = '';
+  for (const g of list) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = '<div class="nm"><b></b><small></small></div><button class="small">QR</button><button class="small danger">Закрыть доступ</button>';
+    row.querySelector('b').textContent = g.name;
+    row.querySelector('small').textContent = ago(g.lastSeen);
+    const [qrBtn, revokeBtn] = row.querySelectorAll('button');
+    qrBtn.onclick = () => showGuestQr(g);
+    revokeBtn.onclick = async () => {
+      if (!confirm(`Закрыть доступ «${g.name}»?`)) return;
+      renderGuests((await api('/api/guests/revoke', { id: g.id })).guests);
+      toast(`Доступ «${g.name}» закрыт`);
+    };
+    box.appendChild(row);
+  }
+  $('revokeAll').hidden = list.length < 2;
+}
+async function loadGuests() {
+  try { renderGuests((await api('/api/guests')).guests); } catch {}
+}
+function showGuestQr(g) {
+  $('guestSheetTitle').textContent = g.name;
+  if (window.qrcode) {
+    const qr = qrcode(0, 'M'); qr.addData(g.url); qr.make();
+    $('guestQr').innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+  }
+  $('shareGuest').onclick = () => {
+    if (navigator.share) navigator.share({ title: 'Пульт музыки', text: 'Управляй музыкой с телефона (в том же Wi-Fi):', url: g.url }).catch(() => {});
+    else { navigator.clipboard && navigator.clipboard.writeText(g.url); toast('Ссылка скопирована'); }
+  };
+  $('guestSheet').hidden = false;
+}
+$('closeSheet').onclick = () => { $('guestSheet').hidden = true; loadGuests(); };
+$('addGuest').onclick = async () => {
+  const name = prompt('Как назвать гостя? (можно оставить пустым)', '');
+  if (name === null) return;
+  const g = await api('/api/guests', { name });
+  showGuestQr(g);
+  loadGuests();
+};
+$('revokeAll').onclick = async () => {
+  if (!confirm('Закрыть доступ всем гостям?')) return;
+  renderGuests((await api('/api/guests/revoke', { all: true })).guests);
+  toast('Доступ закрыт всем гостям');
+};
+$('rotateOwner').onclick = async () => {
+  if (!confirm('Сменить твою ссылку на пульт? Все, у кого есть старая ссылка (кроме гостей), потеряют доступ. Этот телефон перейдёт на новую — добавь её на главный экран заново.')) return;
+  const r = await api('/api/owner/rotate', {});
+  location.replace(r.url);
+};
+setInterval(() => { if (role === 'owner' && $('guestSheet').hidden) loadGuests(); }, 30000);
 
 async function poll() {
   try { renderState(await api('/api/state')); }

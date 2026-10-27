@@ -147,16 +147,64 @@ function isLoopback(req) {
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 }
 
-function tokenOk(req, url) {
-  const t = req.headers['x-token'] || url.searchParams.get('k') || '';
-  const a = Buffer.from(String(t));
-  const b = Buffer.from(config.token);
+const sameSecret = (x, y) => {
+  const a = Buffer.from(String(x));
+  const b = Buffer.from(String(y));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
+// Кто пришёл: хозяин (главный ключ из config.token) или гость (свой ключ, который хозяин может
+// отозвать в любой момент). null — ключа нет или его отозвали.
+const guests = () => config.guests || (config.guests = []);
+function whoIs(req, url) {
+  const t = String(req.headers['x-token'] || url.searchParams.get('k') || '');
+  if (!t) return null;
+  if (sameSecret(t, config.token)) return { role: 'owner' };
+  const g = guests().find((x) => sameSecret(t, x.token));
+  if (!g) return null;
+  g.lastSeen = Date.now();
+  return { role: 'guest', guest: g };
 }
 
-function publicState() {
+// Гостевая ссылка — по тому же адресу, по которому зашёл телефон хозяина: он точно рабочий в этой сети.
+const guestUrl = (req, g) => `http://${req.headers.host}/?k=${g.token}`;
+const guestView = (req, g) => ({ id: g.id, name: g.name, created: g.created, lastSeen: g.lastSeen || null, url: guestUrl(req, g) });
+
+async function handleGuests(req, res, url) {
+  if (url.pathname === '/api/guests' && req.method === 'GET') {
+    return endJson(res, 200, { guests: guests().map((g) => guestView(req, g)) });
+  }
+  if (req.method !== 'POST') return endJson(res, 405, { error: 'method' });
+  const body = await readBody(req);
+  if (url.pathname === '/api/guests') {
+    const name = String(body.name || '').trim().slice(0, 40) || `Гость ${guests().length + 1}`;
+    const g = { id: crypto.randomBytes(4).toString('hex'), token: 'g' + crypto.randomBytes(8).toString('hex'), name, created: Date.now() };
+    guests().push(g);
+    saveConfig();
+    log('пущен гость: ' + name);
+    return endJson(res, 200, guestView(req, g));
+  }
+  if (url.pathname === '/api/guests/revoke') {
+    const before = guests().length;
+    config.guests = body.all ? [] : guests().filter((g) => g.id !== body.id);
+    saveConfig();
+    log(`закрыт доступ гостям: ${before - config.guests.length}`);
+    return endJson(res, 200, { ok: true, guests: guests().map((g) => guestView(req, g)) });
+  }
+  // Новая главная ссылка: все, у кого была старая, теряют доступ; телефон хозяина переходит на новую.
+  if (url.pathname === '/api/owner/rotate') {
+    config.token = crypto.randomBytes(8).toString('hex');
+    saveConfig();
+    log('главный ключ сменён');
+    return endJson(res, 200, { url: `http://${req.headers.host}/?k=${config.token}` });
+  }
+  return endJson(res, 404, { error: 'not found' });
+}
+
+function publicState(who) {
   const agent = pickPrimary();
   return {
+    role: who ? who.role : 'owner',
     agentOnline: !!agent,
     agents: agents.size,
     mediaKeys: process.platform === 'win32',
@@ -375,6 +423,15 @@ async function handle(req, res) {
     );
   }
 
+  // Гости на странице настройки ПК: посмотреть и закрыть доступ (создавать — с телефона хозяина).
+  if (url.pathname === '/local/guests/revoke') {
+    if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
+    const body = await readBody(req);
+    config.guests = body.all ? [] : guests().filter((g) => g.id !== body.id);
+    saveConfig();
+    return endJson(res, 200, { ok: true });
+  }
+
   if (url.pathname === '/local/launch') {
     if (!isLoopback(req) || req.method !== 'POST' || req.headers['x-vkr'] !== '1') return endJson(res, 403, { error: 'forbidden' });
     return endJson(res, 200, browser ? await browser.ensureBrowser() : { ok: false, error: 'not in browser mode' });
@@ -392,6 +449,7 @@ async function handle(req, res) {
         mode: browser ? 'browser' : 'userscript',
         browserFound: browser ? !!browser.findBrowser() : null,
         telegram: telegram ? telegram.info() : null,
+        guests: guests().map((g) => ({ id: g.id, name: g.name, lastSeen: g.lastSeen || null })),
       });
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -399,20 +457,28 @@ async function handle(req, res) {
   }
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
-    if (!tokenOk(req, url)) {
+    if (!whoIs(req, url)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Нужна ссылка с ключом — её печатает сервер при запуске.');
+      return res.end('Доступа нет: ссылка неверная, или хозяин пульта закрыл доступ.');
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     return fs.createReadStream(path.join(__dirname, 'public', 'index.html')).pipe(res);
   }
 
   if (url.pathname.startsWith('/api/')) {
-    if (!tokenOk(req, url)) return endJson(res, 403, { error: 'bad token' });
-    if (url.pathname === '/api/state') return endJson(res, 200, publicState());
+    const who = whoIs(req, url);
+    if (!who) return endJson(res, 403, { error: 'no access' });
+    if (url.pathname === '/api/state') return endJson(res, 200, publicState(who));
     if (url.pathname === '/api/list') return endJson(res, 200, list);
+    if (url.pathname === '/api/cmd' && req.method === 'POST') {
+      const cmd = await readBody(req);
+      if (who.role === 'guest' && cmd && cmd.type === 'diagnose') return endJson(res, 200, { ok: false, error: 'Только для хозяина' });
+      return endJson(res, 200, await handleCommand(cmd));
+    }
+    // Дальше — только хозяину: диагностика и управление гостями.
+    if (who.role !== 'owner') return endJson(res, 403, { error: 'owner only' });
     if (url.pathname === '/api/diag') return endJson(res, 200, diag || {});
-    if (url.pathname === '/api/cmd' && req.method === 'POST') return endJson(res, 200, await handleCommand(await readBody(req)));
+    if (url.pathname.startsWith('/api/guests') || url.pathname === '/api/owner/rotate') return handleGuests(req, res, url);
   }
 
   endJson(res, 404, { error: 'not found' });

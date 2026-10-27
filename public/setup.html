@@ -132,6 +132,14 @@
   </div>
 </div>
 
+  <div class="card wide" id="guestCard" hidden>
+    <b>Гости</b>
+    <p class="muted" style="margin:4px 0 8px">Кто ещё может управлять музыкой. Пустить нового гостя — с телефона хозяина
+      (раздел «Гости» внизу пульта). Закрыть доступ можно и здесь.</p>
+    <div id="guestRows"></div>
+    <a href="#" id="guestRevokeAll" class="muted">Закрыть доступ всем гостям</a>
+  </div>
+
   <div class="card wide" id="tgCard">
     <b>Telegram-бот</b> <span class="muted" id="tgStatus"></span>
     <p class="muted" style="margin:4px 0 10px">Бот показывает, что сейчас играет, и даёт кнопки ⏮ ⏯ ⏭ — работает откуда угодно,
@@ -212,6 +220,7 @@ async function refresh() {
     }
   }
   renderTelegram(info.telegram);
+  renderGuests(info.guests || []);
   const ok = info.agentOnline;
   if (info.mode === 'browser') {
     document.getElementById('tmCard').hidden = true;
@@ -228,6 +237,32 @@ async function refresh() {
   document.getElementById('agentHint').hidden = ok;
   for (const id of ['s1', 's2', 's3', 's4']) document.getElementById(id).classList.toggle('done', ok);
 }
+// ---------- гости ----------
+let guestKey = '';
+function renderGuests(list) {
+  document.getElementById('guestCard').hidden = !list.length;
+  const key = JSON.stringify(list.map((g) => [g.id, g.name, Math.round((g.lastSeen || 0) / 60000)]));
+  if (key === guestKey) return;
+  guestKey = key;
+  const box = document.getElementById('guestRows');
+  box.innerHTML = '';
+  for (const g of list) {
+    const row = document.createElement('p');
+    const m = g.lastSeen ? Math.round((Date.now() - g.lastSeen) / 60000) : null;
+    row.innerHTML = '<b></b> <span class="muted"></span> · <a href="#">закрыть доступ</a>';
+    row.querySelector('b').textContent = g.name;
+    row.querySelector('span').textContent = m === null ? 'ещё не заходил' : m < 1 ? 'сейчас на связи' : `был ${m} мин назад`;
+    row.querySelector('a').onclick = (e) => { e.preventDefault(); revokeGuests({ id: g.id }); };
+    box.appendChild(row);
+  }
+}
+async function revokeGuests(body) {
+  await fetch('/local/guests/revoke', { method: 'POST', headers: { 'X-VKR': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  guestKey = '';
+  refresh();
+}
+document.getElementById('guestRevokeAll').onclick = (e) => { e.preventDefault(); if (confirm('Закрыть доступ всем гостям?')) revokeGuests({ all: true }); };
+
 // ---------- Telegram-бот ----------
 let tgShownLink = null;
 function renderTelegram(t) {
