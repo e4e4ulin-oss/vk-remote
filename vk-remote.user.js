@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.4.2
+// @version      0.4.3
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -217,13 +217,15 @@
     const posFromAp = num(call('getCurrentProgressTime'));
     const durFromAp = num(call('getCurrentDuration'));
     // Без подписки VK крутит рекламу перед треком: плеер говорит «играет», а время трека стоит на нуле.
+    // Прямой флаг — ap.ads._isActive (найден на живом VK); счётчик рекламы — запасной признак.
     const adTime = num(call('getCurrentAdProgressTime'));
+    const adActive = !!(p && p.ads && p.ads._isActive === true);
     return {
       title: title || '',
       artist: artist || '',
       cover: cover || '',
       playing: !!player.isPlaying(),
-      ad: adTime !== null && adTime > 0,
+      ad: adActive || (adTime !== null && adTime > 0),
       position: posFromAp !== null ? posFromAp / 1000 : media ? media.currentTime : null,
       duration: durFromAp !== null ? durFromAp : media && isFinite(media.duration) ? media.duration : null,
       volume: media ? media.volume : num(p && p._userVolume),
