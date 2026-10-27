@@ -11,6 +11,8 @@
     --accent: #0077ff; --ok: #2fbf71; --warn: #e5a13a; --err: #e5534b;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* без этого display:flex у формы и полосок перекрывал атрибут hidden */
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.35 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
     padding: env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom)); }
@@ -42,6 +44,7 @@
   .go { border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 0 16px; font: inherit; cursor: pointer; }
   .listhead { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 13px; margin: 6px 2px; }
   .list { list-style: none; margin: 0; padding: 0; }
+  .list li.sec { display: block; cursor: default; padding: 16px 6px 6px; border: 0; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
   .list li { display: flex; align-items: center; gap: 10px; padding: 11px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .list li:active { background: var(--card); }
   .list .n { width: 22px; color: var(--muted); font-size: 12px; text-align: right; flex: none; }
@@ -93,7 +96,7 @@
     <button class="tab" data-tab="page">С экрана ПК</button>
   </div>
 
-  <form id="searchForm" hidden>
+  <form id="searchForm">
     <input type="search" id="q" placeholder="Исполнитель или трек" enterkeyhint="search" autocomplete="off">
     <button class="go">Найти</button>
   </form>
@@ -196,7 +199,17 @@ async function loadList() {
   $('listTitle').textContent = l.title + (l.tracks.length ? ` · ${l.tracks.length}` : '');
   const ul = $('list');
   ul.innerHTML = '';
+  // Разделы как на ПК («Моя музыка», «Все треки»…): заголовок перед каждой сменой раздела.
+  let section = null;
+  const sectioned = l.tracks.some((t) => t.section);
   l.tracks.forEach((t, i) => {
+    if (sectioned && t.section !== section) {
+      section = t.section;
+      const h = document.createElement('li');
+      h.className = 'sec';
+      h.textContent = section || 'Другое';
+      ul.appendChild(h);
+    }
     const li = document.createElement('li');
     li.innerHTML = '<span class="n"></span><span class="t"><b></b><span></span></span><span class="d"></span>';
     li.querySelector('.n').textContent = i + 1;
@@ -206,19 +219,22 @@ async function loadList() {
     li.onclick = () => cmd({ type: 'playIndex', index: t.index, expect: { title: t.title, artist: t.artist } });
     ul.appendChild(li);
   });
-  $('listMsg').hidden = !!l.tracks.length && !l.error;
+  $('listMsg').hidden = !!l.tracks.length && !l.error && !l.note;
   $('listMsg').className = l.error ? 'msg err' : 'msg';
-  $('listMsg').textContent = l.error || '';
+  $('listMsg').textContent = l.error || l.note || '';
   $('more').hidden = !l.tracks.length;
 }
 
 function requestList() {
+  const q = $('q').value.trim();
   if (tab === 'search') {
-    const q = $('q').value.trim();
     if (!q) return $('q').focus();
     cmd({ type: 'search', q });
+  } else if (tab === 'my') {
+    // На «Моей музыке» строка поиска ищет только среди своих треков; пустая — весь список.
+    cmd(q ? { type: 'search', q, scope: 'my' } : { type: 'myMusic' });
   } else {
-    cmd({ type: tab === 'my' ? 'myMusic' : 'scrapePage' });
+    cmd({ type: 'scrapePage' });
   }
   waitingList = true;
   $('list').innerHTML = '';
@@ -228,12 +244,17 @@ function requestList() {
 }
 
 document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => cmd({ type: b.dataset.cmd })));
-document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => {
-  document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+function syncSearchForm() {
+  $('searchForm').hidden = tab === 'page';
+  $('q').placeholder = tab === 'my' ? 'Поиск в моей музыке' : 'Исполнитель или трек';
+}
+document.querySelectorAll('.tab[data-tab]').forEach((b) => (b.onclick = () => {
+  document.querySelectorAll('.tab[data-tab]').forEach((x) => x.classList.toggle('on', x === b));
   tab = b.dataset.tab;
-  $('searchForm').hidden = tab !== 'search';
-  if (tab === 'search') $('q').focus(); else requestList();
+  syncSearchForm();
+  if (tab === 'search' && !$('q').value.trim()) $('q').focus(); else requestList();
 }));
+syncSearchForm();
 $('searchForm').onsubmit = (e) => { e.preventDefault(); $('q').blur(); requestList(); };
 $('refresh').onclick = requestList;
 $('launchBtn').onclick = () => cmd({ type: 'launch' });

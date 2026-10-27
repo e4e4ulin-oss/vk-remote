@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VK Remote — агент
 // @namespace    vk-remote
-// @version      0.3.2
+// @version      0.4.0
 // @description  Связывает вкладку vk.com с локальным сервером VK Remote, чтобы управлять музыкой с телефона
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -22,6 +22,10 @@
   const SERVER = 'http://127.0.0.1:27613';
   const MY_MUSIC_PATH = '/audio';
   const SEARCH_PATH = (q) => '/audio?q=' + encodeURIComponent(q);
+  // Раздел результатов поиска с треками самого пользователя («Моя музыка», «В моих аудиозаписях»…).
+  const MY_SECTION_RE = /мо(я|ей|ю|и|их)\s+(музык|аудио|трек|плейлист)|в\s+моей|добавленн|my\s+music|your\s+music/i;
+  // Заголовки разделов на странице: в разных версиях VK это h2/h3, role=heading или блоки *Header*/*Title*.
+  const HEADING_SEL = 'h1,h2,h3,h4,[role="heading"],[data-testid*="header" i],[data-testid*="title" i],[class*="Header"],[class*="Title"]';
   // Селекторы строк с треками: старый дизайн VK, затем догадки для нового.
   const ROW_SELECTORS = [
     '.audio_row[data-audio]',
@@ -227,10 +231,38 @@
     return { title: lines[0] || '?', artist: lines[1] || '', duration: dur ? toSec(dur) : null };
   }
 
+  const isRow = (el) => ROW_SELECTORS.some((sel) => el.matches(sel));
+  const hasRows = (el) => ROW_SELECTORS.some((sel) => el.querySelector(sel));
+
+  function headingText(el) {
+    const h = el.matches(HEADING_SEL) ? el : el.querySelector(HEADING_SEL);
+    const text = h && (h.innerText || '').trim().split('\n')[0].trim();
+    return text && text.length <= 60 ? text : null;
+  }
+
+  // Раздел трека — ближайший заголовок выше по странице. Поднимаемся от строки и на каждом уровне
+  // смотрим предыдущих соседей; блок с другими треками — это чужой раздел, тогда идём уровнем выше.
+  function sectionOf(el, cache) {
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      if (cache.has(node)) return cache.get(node);
+      for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (isRow(sib)) continue;
+        if (hasRows(sib)) break;
+        const text = headingText(sib);
+        if (text) {
+          cache.set(node, text);
+          return text;
+        }
+      }
+    }
+    return '';
+  }
+
   function scrape() {
     const els = findRowElements();
     rows = els;
-    return els.map((el, i) => ({ index: i, ...parseRow(el) }));
+    const cache = new Map();
+    return els.map((el, i) => ({ index: i, section: sectionOf(el, cache), ...parseRow(el) }));
   }
 
   async function sendList(id, title) {
@@ -240,6 +272,35 @@
       title,
       tracks,
       error: tracks.length ? null : 'Не нашёл треков на странице. Пришли диагностику — подстрою селекторы.',
+    });
+  }
+
+  async function goAndWait(url) {
+    const prevFirst = findRowElements()[0];
+    const prevUrl = location.href;
+    navigate(url);
+    await waitForRows(prevFirst, prevUrl);
+  }
+
+  // Поиск только по своей музыке: берём раздел «Моя музыка» из обычного поиска VK — он ищет
+  // по всей библиотеке, а не только по загруженной на странице части.
+  async function searchMine(q) {
+    const title = 'Моя музыка: ' + q;
+    await goAndWait(SEARCH_PATH(q));
+    const all = scrape();
+    const mine = all.filter((t) => MY_SECTION_RE.test(t.section));
+    if (mine.length) return post('/agent/list', { id: 'my', title, tracks: mine.map((t) => ({ ...t, section: '' })) });
+    // Если VK так и не показал раздела «Моя музыка», ищем среди загруженных треков своей страницы.
+    const sections = new Set(all.map((t) => t.section).filter(Boolean));
+    await goAndWait(MY_MUSIC_PATH);
+    const needle = q.toLowerCase();
+    const found = scrape().filter((t) => (t.title + ' ' + t.artist).toLowerCase().includes(needle));
+    return post('/agent/list', {
+      id: 'my',
+      title,
+      tracks: found,
+      note: sections.size ? null : 'Искал только среди загруженных треков — пролистай «Загрузить ещё» на вкладке «Моя музыка», если не нашлось',
+      error: found.length ? null : 'В моей музыке ничего не нашлось',
     });
   }
 
@@ -350,7 +411,9 @@
         case 'volume': return player.setVolume(cmd.value);
         case 'seek': return player.seek(cmd.value);
         case 'myMusic': return openAndList(MY_MUSIC_PATH, 'my', 'Моя музыка');
-        case 'search': return openAndList(SEARCH_PATH(cmd.q || ''), 'search', 'Поиск: ' + (cmd.q || ''));
+        case 'search':
+          if (cmd.scope === 'my') return searchMine(cmd.q || '');
+          return openAndList(SEARCH_PATH(cmd.q || ''), 'search', 'Поиск: ' + (cmd.q || ''));
         case 'scrapePage': return sendList('page', 'Со страницы ПК');
         case 'loadMore': return loadMore(cmd.listId || 'page', cmd.listTitle || 'Список');
         case 'playIndex': return playIndex(cmd.index, cmd.expect);

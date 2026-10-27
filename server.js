@@ -225,6 +225,7 @@ async function handleAgent(req, res, url) {
         title: String(body.title || ''),
         tracks: Array.isArray(body.tracks) ? body.tracks.slice(0, 500) : [],
         error: body.error || null,
+        note: body.note || null,
       };
       return endJson(res, 200, { ok: true });
     case '/agent/diag':
